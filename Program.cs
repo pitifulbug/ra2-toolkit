@@ -3,15 +3,30 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Win32.SafeHandles;
 
-Console.SetOut(new StringWriter());
+Console.SetOut(TextWriter.Null);
+
+using var singleInstanceMutex = new Mutex(
+    true, @"Local\PitifulBug.RA2Toolkit.SingleInstance", out var isFirstInstance);
+if (!isFirstInstance)
+{
+    System.Windows.Forms.MessageBox.Show(
+        "RA2 Toolkit 已经在运行，请切换到现有窗口。",
+        "RA2 Toolkit",
+        System.Windows.Forms.MessageBoxButtons.OK,
+        System.Windows.Forms.MessageBoxIcon.Information);
+    return;
+}
 
 try
 {
     using var picker = new CratePicker();
     picker.Run();
+}
+catch (GameProcessExitedException)
+{
+    // The game closed while the controller was reading its final frame.
 }
 catch (Exception error)
 {
@@ -60,85 +75,129 @@ internal sealed class CratePicker : IDisposable
 
     private const int EventSize = 111;
     private const int QueueCapacity = 128;
+    private const int MissionEventsPerBatch = 16;
     private const long CurrentFrame = 0xA8ED84;
     private const long MaxAhead = 0xA8B550;
+    private const long Session = 0xA8B238;
+    private const long MultiplayerPlayerCount = 0xA8B54C;
     private const long CurrentObjects = 0xA8ECB8;
     private const long TechnoArray = 0xA8EC78;
     private const long FootArray = 0x8B3DC0;
-    private const long BuildingTypeArray = 0xA83C68;
     private const long FactoryArray = 0xA83E30;
+    private const long Map = 0x87F7E8;
     private const long HouseArray = 0xA80228;
     private const long CurrentPlayer = 0xA83D4C;
     private const long OutList = 0xA802C8;
-    private const long Map = 0x87F7E8;
-    private const long ActiveFoundationBuffer = 0x8A041C;
+    private const long ActionLineTimerStart = 0xB0EA80;
+    private const long ActionLineTimerTimeLeft = 0xB0EA88;
+    private const long ActionLinesEnabled = 0x843108;
+    private const long ActionLineSelectionCheck = 0x6D4735;
+    private const long CellFogUpdate = 0x486A70;
+    private const int MaximumCrateActionLineUnits = 100;
+    private const int CrateActionLineCodeCaveSize = 512;
+    private static readonly byte[] ActionLineSelectionOriginalBytes =
+        Convert.FromHexString("8A868300000084C0");
+    private static readonly byte[] CellFogUpdateOriginalBytes =
+        Convert.FromHexString("A130B2A800");
+    private static readonly byte[] CellFogUpdateDisabledBytes =
+        Convert.FromHexString("C390909090");
     private const int MapBoundsOffset = 0x124;
+    private const int MapValidCellCountOffset = 0x6C;
+    private const int MapCellsOffset = 0x138;
+    private const int MapRedrawsOffset = 0x1158;
     private const int CratesOffset = 0x158;
-    private const int CurrentFoundationCenterOffset = 0x1174;
-    private const int CurrentFoundationTopLeftOffset = 0x1178;
-    private const int CurrentFoundationDataOffset = 0x117C;
-    private const int CurrentFoundationProximityValidOffset = 0x1180;
-    private const int CurrentFoundationTerrainValidOffset = 0x1181;
-    private const int CurrentBuildingOffset = 0x11A4;
-    private const int CurrentBuildingTypeOffset = 0x11A8;
-    private const int CurrentBuildingOwnerOffset = 0x11AC;
-    private const int DisplayModeFlagsOffset = 0x11B0;
-    private const int CurrentSuperWeaponOffset = 0x11B8;
-    private const int MapCellsItemsOffset = 0x13C;
-    private const int CellPlacementFlagOffset = 0x12C;
-    private const int ActivePlacementFlag = 2;
-    private const int PersistentMarkerFlag = 4;
+    private const int CellVisibilityOffset = 0x120;
+    private const int CellAltFlagsOffset = 0x12C;
+    private const int CellRevealFlagsLength = 0x18;
     private const int ObjectIsOnMapOffset = 0x74;
     private const int ObjectInLimboOffset = 0x81;
     private const int ObjectIsAliveOffset = 0x90;
+    private const int ObjectHealthOffset = 0x6C;
+    private const int ObjectTypeStrengthOffset = 0xA0;
     private const int TechnoArmorMultiplierOffset = 0x158;
     private const int TechnoFirepowerMultiplierOffset = 0x160;
     private const int TechnoOwnerOffset = 0x21C;
-    private const int AbstractTypeIdOffset = 0x24;
-    private const int BuildingTypeOffset = 0x520;
-    private const int BuildingTypeFoundationDataOffset = 0xDFC;
-    private const int BuildingTypeBuildCatOffset = 0xE08;
-    private const int FactoryObjectOffset = 0x58;
-    private const int FactoryOwnerOffset = 0x6C;
-    private const int FactoryIsSuspendedOffset = 0x70;
+    private const int TechnoVeterancyOffset = 0x150;
     private const int HouseBalanceOffset = 0x30C;
+    private const int HouseVisionaryOffset = 0x240;
+    private const int HouseMapIsClearOffset = 0x241;
     private const int HouseBaseSpawnCellOffset = 0x5490;
     private const int HouseBaseCenterOffset = 0x5494;
+    private const int HouseBuildSpeedOffset = 0x5378;
+    private const int HousePowerOutputOffset = 0x53A4;
+    private const int HousePowerDrainOffset = 0x53A8;
+    private const int HouseBuildingsOffset = 0x68;
+    private const int HouseSupersOffset = 0x254;
+    private const int HousePowerBlackoutTimerOffset = 0x2A4;
+    private const int HouseRecheckPowerOffset = 0x5778;
+    private const int HouseSpySatActiveOffset = 0x577A;
+    private const int BuildingTypeOffset = 0x520;
+    private const int BuildingIsBeingRepairedOffset = 0x6E8;
+    private const int FactoryProductionValueOffset = 0x24;
+    private const int FactoryProductionChangedOffset = 0x28;
+    private const int FactoryProductionTimerStartOffset = 0x2C;
+    private const int FactoryProductionTimerTimeLeftOffset = 0x34;
+    private const int FactoryProductionRateOffset = 0x38;
+    private const int FactoryProductionStepOffset = 0x3C;
+    private const int FactoryObjectOffset = 0x58;
+    private const int FactoryOwnerOffset = 0x6C;
+    private const int SuperRechargeStartOffset = 0x30;
+    private const int SuperRechargeTimeLeftOffset = 0x38;
+    private const int SuperIsPresentOffset = 0x6D;
+    private const int SuperIsReadyOffset = 0x6F;
+    private const int SuperIsSuspendedOffset = 0x70;
+    private const long PassesProximityCheck = 0x4A8EB0;
     private const double LegacyOverflowingFirepowerMultiplier = 99999.0;
     private const double OneHitKillFirepowerMultiplier = 1000.0;
     private const double ExtremeDefenseArmorMultiplier = 1000.0;
-    private const int InfiniteMoneyFloor = 100_000_000;
+    private const int InfiniteMoneyFloor = 100_000;
+    private const int LockedPowerOutput = 1_000_000;
+    private const long UpdatePowerFinalComparison = 0x508D8D;
+    private static readonly byte[] UpdatePowerOriginalBytes = Convert.FromHexString("8B8EA4530000");
 
     private readonly Process process;
     private readonly SafeProcessHandle handle;
     private readonly List<UnitState> units = [];
+    private readonly Dictionary<int, QueuedMission> pendingMissions = [];
+    private readonly Queue<QueuedMission> formationMissions = new();
     private bool enabled;
-    private bool f2WasDown;
-    private bool f4WasDown;
-    private bool f5WasDown;
-    private bool f6WasDown;
-    private bool f7WasDown;
-    private bool f8WasDown;
-    private bool f9WasDown;
-    private bool f10WasDown;
-    private bool leftMouseWasDown;
-    private bool rightMouseWasDown;
+    private DateTime nextCrateTickAt = DateTime.MinValue;
+    private DateTime nextMissionFlushAt = DateTime.MinValue;
+    private bool crateRouteLinesEnabled;
+    private bool crateActionLinesActive;
+    private byte originalActionLinesEnabled;
+    private nint crateActionLineCodeCave;
+    private long crateActionLineCountAddress;
+    private long crateActionLineTableAddress;
     private readonly Dictionary<CrateKey, DateTime> recentlyCollected = [];
-    private readonly List<AutoBuildTarget> autoBuildTargets = [];
-    private readonly Queue<BuildPlan> buildPlans = [];
-    private AutoBuildTarget? planningTarget;
-    private bool planningPreviewActive;
-    private int nextBuildPlanNumber = 1;
-    private BuildPlan? activeBuildPlan;
-    private bool autoBuildEnabled;
-    private DateTime nextAutoBuildActionAt = DateTime.MinValue;
-    private DateTime nextMarkerRefreshAt = DateTime.MinValue;
     private bool oneHitKillEnabled;
     private uint oneHitKillHouse;
     private readonly Dictionary<uint, OneHitKillObjectState> oneHitKillObjects = [];
     private DateTime nextOneHitKillRefreshAt = DateTime.MinValue;
     private bool infiniteMoneyEnabled;
     private DateTime nextInfiniteMoneyRefreshAt = DateTime.MinValue;
+    private bool revealMapEnabled;
+    private uint revealMapHouse;
+    private byte originalVisionary;
+    private byte originalMapIsClear;
+    private byte originalSpySatActive;
+    private bool revealMapFogUpdateDisabled;
+    private readonly Dictionary<uint, RevealMapCellState> originalRevealMapCells = [];
+    private DateTime nextRevealMapRefreshAt = DateTime.MinValue;
+    private bool maximumPowerEnabled;
+    private nint maximumPowerCodeCave;
+    private DateTime nextPowerRefreshAt = DateTime.MinValue;
+    private bool instantBuildEnabled;
+    private uint instantBuildHouse;
+    private int[]? originalBuildSpeeds;
+    private DateTime nextInstantBuildRefreshAt = DateTime.MinValue;
+    private bool buildAnywhereEnabled;
+    private byte[]? originalProximityCheck;
+    private bool autoRepairEnabled;
+    private DateTime nextAutoRepairAt = DateTime.MinValue;
+    private bool superWeaponNoCooldownEnabled;
+    private DateTime nextSuperWeaponRefreshAt = DateTime.MinValue;
+    private bool multiplayerSession;
     private readonly ConcurrentQueue<OverlayCommand> overlayCommands = new();
     private Thread? overlayThread;
     private volatile OverlayPanel? overlay;
@@ -169,13 +228,12 @@ internal sealed class CratePicker : IDisposable
                 $"游戏版本不受支持。\n检测到：{hash}\n兼容校验失败：{compatibilityError}");
 
         const uint access = Native.ProcessQueryInformation | Native.ProcessVmRead |
-                            Native.ProcessVmWrite | Native.ProcessSuspendResume;
+                            Native.ProcessVmWrite | Native.ProcessVmOperation | Native.ProcessSuspendResume;
         handle = Native.OpenProcess(access, false, process.Id);
         if (handle.IsInvalid)
             throw new Win32Exception(Marshal.GetLastWin32Error(), "无法打开游戏进程");
 
         ValidateLayout();
-        LoadAutoBuildTargets();
         Console.WriteLine($"已连接：{Path.GetFileName(path)}，PID {process.Id}");
         Console.WriteLine(exactHashMatch ? "版本校验：已知哈希。" : "版本校验：兼容补丁指纹通过。");
         Console.WriteLine("游戏内文字注入：已关闭。\n");
@@ -259,107 +317,165 @@ internal sealed class CratePicker : IDisposable
     public void Run()
     {
         StartOverlay();
-        Console.WriteLine("规划建造：F7=光棱塔，F8=爱国者导弹；左键记录后保留安全待建标记，后台完成部署时再移除。\n");
-        Console.WriteLine("版本：2026.08.11-r22（独立桌面控制中心）");
+        Console.WriteLine("软件版本：1.0.1");
         Console.WriteLine("使用方法：");
-        Console.WriteLine("-1. F2 开启/关闭我方无限资金（资金低于 1 亿时自动补满）。");
-        Console.WriteLine("0. F4 开启/关闭我方安全秒杀与千倍防御（仅建议战役/遭遇战）。");
         Console.WriteLine("1. 在游戏中框选一个或多个己方可移动单位。");
-        Console.WriteLine("2. 按 F5 开始；每个单位会分配不同箱子。");
-        Console.WriteLine("3. F7/F8 立即规划光棱塔/爱国者；左键记录并忽略地形限制，右键取消。");
-        Console.WriteLine("4. 可连续规划多个坐标；F9 清空建造队列，F10 退出。\n");
         Console.WriteLine("桌面控制中心已启动；可从任务栏切换，关闭窗口会安全退出工具。\n");
-        Console.WriteLine("当前程序状态：已关闭，等待 F5。\n");
+        Console.WriteLine("当前程序状态：已关闭。");
 
-        while (!process.HasExited && !exitRequested)
+        while (!exitRequested)
         {
-            PollHotkeys();
-            ProcessOverlayCommands();
-            if (infiniteMoneyEnabled)
-                MaintainInfiniteMoney();
-            if (oneHitKillEnabled)
-                MaintainOneHitKill();
-            if (enabled)
-                Tick();
-            if (autoBuildEnabled)
-                TickAutoBuild();
-            RefreshOverlay();
-            Thread.Sleep(15);
+            if (IsGameProcessUnavailable())
+                break;
+            try
+            {
+                multiplayerSession = IsMultiplayerSession();
+                if (multiplayerSession)
+                    EnforceMultiplayerSafety();
+                ProcessOverlayCommands();
+                if (revealMapEnabled)
+                    MaintainRevealMap();
+                if (infiniteMoneyEnabled)
+                    MaintainInfiniteMoney();
+                if (oneHitKillEnabled)
+                    MaintainOneHitKill();
+                if (maximumPowerEnabled)
+                    MaintainMaximumPower();
+                if (instantBuildEnabled)
+                    MaintainInstantBuild();
+                if (autoRepairEnabled)
+                    MaintainAutoRepair();
+                if (superWeaponNoCooldownEnabled)
+                    MaintainSuperWeaponNoCooldown();
+                var now = DateTime.UtcNow;
+                if (enabled && now >= nextCrateTickAt)
+                {
+                    nextCrateTickAt = now + TimeSpan.FromMilliseconds(100);
+                    Tick();
+                }
+                FlushQueuedMissions(now);
+                RefreshOverlay();
+                Thread.Sleep(15);
+            }
+            catch (GameProcessExitedException)
+            {
+                break;
+            }
+            catch (Exception error) when (
+                error is Win32Exception or InvalidOperationException && IsGameProcessUnavailable())
+            {
+                break;
+            }
         }
-        if (process.HasExited)
+        if (IsGameProcessUnavailable())
             Console.WriteLine("游戏进程已经退出。");
+        StopOverlay();
     }
 
-    private void PollHotkeys()
+    private bool IsGameProcessUnavailable()
     {
-        var f2Down = Native.GetAsyncKeyState(0x71) < 0;
-        if (f2Down && !f2WasDown)
-            ToggleInfiniteMoney();
-        f2WasDown = f2Down;
-
-        var f4Down = Native.GetAsyncKeyState(0x73) < 0;
-        if (f4Down && !f4WasDown)
-            ToggleOneHitKill();
-        f4WasDown = f4Down;
-
-        var f5Down = Native.GetAsyncKeyState(0x74) < 0;
-        if (f5Down && !f5WasDown)
+        try
         {
-            if (!enabled)
-                Start();
+            return process.HasExited;
         }
-        f5WasDown = f5Down;
-
-        var f6Down = Native.GetAsyncKeyState(0x75) < 0;
-        if (f6Down && !f6WasDown && enabled)
-            Pause();
-        f6WasDown = f6Down;
-
-        var f7Down = Native.GetAsyncKeyState(0x76) < 0;
-        var f8Down = Native.GetAsyncKeyState(0x77) < 0;
-        if (f7Down && !f7WasDown)
-            StartPlanningPlacement("ATESLA", "光棱塔");
-        if (f8Down && !f8WasDown)
-            StartPlanningPlacement("NASAM", "爱国者导弹");
-        f7WasDown = f7Down;
-        f8WasDown = f8Down;
-
-        PollPlanningMouse();
-
-        var f9Down = Native.GetAsyncKeyState(0x78) < 0;
-        if (f9Down && !f9WasDown)
-            StopAutoBuild();
-        f9WasDown = f9Down;
-
-        var f10Down = Native.GetAsyncKeyState(0x79) < 0;
-        if (f10Down && !f10WasDown)
-            RequestExit();
-        f10WasDown = f10Down;
+        catch (InvalidOperationException)
+        {
+            return true;
+        }
+        catch (Win32Exception)
+        {
+            return true;
+        }
     }
 
-    private void Start()
+    private void EnableCratePicker()
     {
+        if (enabled)
+            return;
+        enabled = true;
+        recentlyCollected.Clear();
+        Console.WriteLine("[自动捡箱已开启] 请在游戏中选中单位并按下快捷键；再次选中这些单位并按快捷键即可停止。");
+    }
+
+    private void DisableCratePicker()
+    {
+        var wasEnabled = enabled;
+        enabled = false;
+        DisableCrateActionLines();
+        pendingMissions.Clear();
+        foreach (var state in units.Where(state => IsCapturedUnitValid(state.Unit)))
+            QueueGuard(state.Unit);
+        units.Clear();
+        recentlyCollected.Clear();
+        if (wasEnabled)
+            Console.WriteLine("[自动捡箱已关闭] 所有已登记单位均已停止捡箱，路线已清除。");
+    }
+
+    private int SetSelectedCratePickers(bool shouldEnable)
+    {
+        if (!enabled)
+        {
+            Console.WriteLine("[未操作] 请先在控制面板中勾选“启用自动捡箱”。");
+            return -1;
+        }
+
         var selectedUnits = CaptureSelectedUnits();
         if (selectedUnits.Count == 0)
         {
-            Console.WriteLine("[未启动] 请先框选一个或多个己方可移动单位，再按 F5。");
-            return;
+            Console.WriteLine("[未操作] 请先在游戏中选中一个或多个己方可移动单位，再按自动捡箱快捷键。");
+            return 0;
         }
-        units.Clear();
-        units.AddRange(selectedUnits.Select(selected => new UnitState(selected)));
-        enabled = true;
-        recentlyCollected.Clear();
-        Console.WriteLine($"[运行] 已锁定 {units.Count} 个单位：{string.Join(", ", units.Select(state => state.Unit.Id))}");
-        Console.WriteLine("当前程序状态：已开启（F6 暂停）。");
+
+        if (!shouldEnable)
+        {
+            var selectedSet = selectedUnits
+                .Select(selected => (selected.Pointer, selected.Id))
+                .ToHashSet();
+            var removedUnits = units
+                .Where(state => selectedSet.Contains((state.Unit.Pointer, state.Unit.Id)))
+                .ToArray();
+            foreach (var state in removedUnits)
+                pendingMissions.Remove(state.Unit.Id);
+            foreach (var state in removedUnits.Where(state => IsCapturedUnitValid(state.Unit)))
+                QueueGuard(state.Unit);
+            units.RemoveAll(state => selectedSet.Contains((state.Unit.Pointer, state.Unit.Id)));
+            RefreshCrateActionLines(units.Where(state => state.InvalidSince is null));
+            if (units.Count == 0)
+                DisableCrateActionLines();
+            Console.WriteLine($"[停止捡箱] 已停止 {removedUnits.Length} 个选中单位：{FormatUnitIds(removedUnits.Select(state => state.Unit.Id))}");
+            return removedUnits.Length;
+        }
+
+        var addedUnits = selectedUnits
+            .Where(selected => units.All(state => state.Unit != selected))
+            .ToArray();
+        units.AddRange(addedUnits.Select(selected => new UnitState(selected)));
+        if (crateRouteLinesEnabled && units.Count != 0)
+            EnableCrateActionLines();
+        Console.WriteLine($"[开始捡箱] 已添加 {addedUnits.Length} 个选中单位：{FormatUnitIds(addedUnits.Select(unit => unit.Id))}");
+        return addedUnits.Length;
     }
 
-    private void Pause()
+    private static string FormatUnitIds(IEnumerable<int> ids)
     {
-        if (enabled)
-            Console.WriteLine("[暂停] 已停止发送移动指令。当前程序状态：已暂停。");
-        enabled = false;
-        units.Clear();
-        recentlyCollected.Clear();
+        var values = ids.ToArray();
+        var summary = string.Join(", ", values.Take(10));
+        return values.Length > 10 ? $"{summary}…" : summary;
+    }
+
+    private void ToggleCrateRouteLines()
+    {
+        crateRouteLinesEnabled = !crateRouteLinesEnabled;
+        if (!crateRouteLinesEnabled)
+        {
+            DisableCrateActionLines();
+            return;
+        }
+        if (enabled && units.Count != 0)
+        {
+            EnableCrateActionLines();
+            RefreshCrateActionLines(units.Where(state => state.InvalidSince is null));
+        }
     }
 
     private void StartOverlay()
@@ -378,10 +494,6 @@ internal sealed class CratePicker : IDisposable
                     overlay = panel;
                     panel.Shown += (_, _) =>
                     {
-                        var bufferedOutput = Console.Out.ToString() ?? string.Empty;
-                        Console.SetOut(TextWriter.Synchronized(new DesktopLogWriter(panel.AppendLog)));
-                        foreach (var line in bufferedOutput.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
-                            Console.WriteLine(line);
                         ready.Set();
                     };
                     System.Windows.Forms.Application.Run(panel);
@@ -422,35 +534,148 @@ internal sealed class CratePicker : IDisposable
     {
         while (overlayCommands.TryDequeue(out var command))
         {
-            switch (command)
+            try
             {
-                case OverlayCommand.ToggleInfiniteMoney:
-                    ToggleInfiniteMoney();
-                    break;
-                case OverlayCommand.ToggleCombatBoost:
-                    ToggleOneHitKill();
-                    break;
-                case OverlayCommand.ToggleCratePicker:
-                    if (enabled)
-                        Pause();
-                    else
-                        Start();
-                    break;
-                case OverlayCommand.PlanPrismTower:
-                    StartPlanningPlacement("ATESLA", "光棱塔");
-                    break;
-                case OverlayCommand.PlanPatriotMissile:
-                    StartPlanningPlacement("NASAM", "爱国者导弹");
-                    break;
-                case OverlayCommand.ClearBuildQueue:
-                    StopAutoBuild();
-                    break;
-                case OverlayCommand.ExitProgram:
-                    RequestExit();
-                    break;
+                if (multiplayerSession && IsUnsafeInMultiplayer(command))
+                {
+                    ShowOperationStatus("联机对局中已停用该功能，以避免同步异常。", true);
+                    continue;
+                }
+                var previousState = GetToggleState(command);
+                int? affectedCount = null;
+                switch (command)
+                {
+                    case OverlayCommand.ToggleRevealMap:
+                        ToggleRevealMap();
+                        break;
+                    case OverlayCommand.ToggleInfiniteMoney:
+                        ToggleInfiniteMoney();
+                        break;
+                    case OverlayCommand.ToggleCombatBoost:
+                        ToggleOneHitKill();
+                        break;
+                    case OverlayCommand.ToggleCratePicker:
+                        if (enabled)
+                            DisableCratePicker();
+                        else
+                            EnableCratePicker();
+                        break;
+                    case OverlayCommand.EnableSelectedCratePickers:
+                        affectedCount = SetSelectedCratePickers(true);
+                        break;
+                    case OverlayCommand.DisableSelectedCratePickers:
+                        affectedCount = SetSelectedCratePickers(false);
+                        break;
+                    case OverlayCommand.ToggleCrateRouteLines:
+                        ToggleCrateRouteLines();
+                        break;
+                    case OverlayCommand.ToggleMaximumPower:
+                        ToggleMaximumPower();
+                        break;
+                    case OverlayCommand.PromoteSelectedUnits:
+                        affectedCount = PromoteSelectedUnits();
+                        break;
+                    case OverlayCommand.ArrangeSelectedFormation:
+                        affectedCount = ArrangeSelectedFormation();
+                        break;
+                    case OverlayCommand.ToggleInstantBuild:
+                        ToggleInstantBuild();
+                        break;
+                    case OverlayCommand.ToggleBuildAnywhere:
+                        ToggleBuildAnywhere();
+                        break;
+                    case OverlayCommand.ToggleAutoRepair:
+                        ToggleAutoRepair();
+                        break;
+                    case OverlayCommand.ToggleSuperWeaponNoCooldown:
+                        ToggleSuperWeaponNoCooldown();
+                        break;
+                    case OverlayCommand.ExitProgram:
+                        RequestExit();
+                        break;
+                }
+                ReportCommandResult(command, previousState, affectedCount);
+            }
+            catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+            {
+                ShowOperationStatus($"操作未能执行：{error.Message}", true);
             }
         }
     }
+
+    private bool? GetToggleState(OverlayCommand command) => command switch
+    {
+        OverlayCommand.ToggleRevealMap => revealMapEnabled,
+        OverlayCommand.ToggleInfiniteMoney => infiniteMoneyEnabled,
+        OverlayCommand.ToggleCombatBoost => oneHitKillEnabled,
+        OverlayCommand.ToggleCratePicker => enabled,
+        OverlayCommand.ToggleCrateRouteLines => crateRouteLinesEnabled,
+        OverlayCommand.ToggleMaximumPower => maximumPowerEnabled,
+        OverlayCommand.ToggleInstantBuild => instantBuildEnabled,
+        OverlayCommand.ToggleBuildAnywhere => buildAnywhereEnabled,
+        OverlayCommand.ToggleAutoRepair => autoRepairEnabled,
+        OverlayCommand.ToggleSuperWeaponNoCooldown => superWeaponNoCooldownEnabled,
+        _ => null
+    };
+
+    private void ReportCommandResult(
+        OverlayCommand command, bool? previousState, int? affectedCount)
+    {
+        if (previousState is { } previous && GetToggleState(command) is { } current)
+        {
+            var feature = GetFeatureDisplayName(command);
+            if (previous == current)
+            {
+                ShowOperationStatus(
+                    $"{feature}未能{(previous ? "停用" : "启用")}，请确认当前对局状态。", true);
+                return;
+            }
+            ShowOperationStatus($"{feature}已{(current ? "启用" : "停用")}。");
+            return;
+        }
+
+        var message = command switch
+        {
+            OverlayCommand.PromoteSelectedUnits when affectedCount > 0 =>
+                $"已将 {affectedCount} 个单位晋升为三级精英。",
+            OverlayCommand.ArrangeSelectedFormation when affectedCount > 0 =>
+                $"已向 {affectedCount} 个单位下达方阵集结指令。",
+            OverlayCommand.EnableSelectedCratePickers when affectedCount > 0 =>
+                $"已为 {affectedCount} 个单位启用战利品搜寻。",
+            OverlayCommand.DisableSelectedCratePickers when affectedCount > 0 =>
+                $"已停止 {affectedCount} 个单位的战利品搜寻。",
+            OverlayCommand.EnableSelectedCratePickers when affectedCount < 0 =>
+                "请先在控制面板中启用战利品搜寻。",
+            OverlayCommand.DisableSelectedCratePickers when affectedCount < 0 =>
+                "请先在控制面板中启用战利品搜寻。",
+            OverlayCommand.PromoteSelectedUnits or
+            OverlayCommand.ArrangeSelectedFormation or
+            OverlayCommand.EnableSelectedCratePickers or
+            OverlayCommand.DisableSelectedCratePickers =>
+                "未找到可操作的选中单位，请先在游戏中选择己方单位。",
+            _ => null
+        };
+        if (message is not null)
+            ShowOperationStatus(message, affectedCount <= 0);
+    }
+
+    private static string GetFeatureDisplayName(OverlayCommand command) => command switch
+    {
+        OverlayCommand.ToggleRevealMap => "全境洞察",
+        OverlayCommand.ToggleInfiniteMoney => "战略资金保障",
+        OverlayCommand.ToggleCombatBoost => "绝对火力",
+        OverlayCommand.ToggleCratePicker => "战利品搜寻",
+        OverlayCommand.ToggleCrateRouteLines => "搜寻路线",
+        OverlayCommand.ToggleMaximumPower => "电力保障",
+        OverlayCommand.ToggleInstantBuild => "生产线全速运转",
+        OverlayCommand.ToggleBuildAnywhere => "前线部署",
+        OverlayCommand.ToggleAutoRepair => "战地维护",
+        OverlayCommand.ToggleSuperWeaponNoCooldown => "终极武器待命",
+        _ => "功能"
+    };
+
+    private void ShowOperationStatus(string message, bool isError = false) =>
+        overlay?.ShowOperationStatus(message, isError);
 
     private void RefreshOverlay()
     {
@@ -462,11 +687,38 @@ internal sealed class CratePicker : IDisposable
         if (panel is null)
             return;
         panel.UpdateState(new OverlayState(
+            revealMapEnabled,
             infiniteMoneyEnabled,
             oneHitKillEnabled,
             enabled,
-            planningPreviewActive,
-            buildPlans.Count + (activeBuildPlan is null ? 0 : 1)));
+            crateRouteLinesEnabled,
+            maximumPowerEnabled,
+            instantBuildEnabled,
+            buildAnywhereEnabled,
+            autoRepairEnabled,
+            superWeaponNoCooldownEnabled,
+            multiplayerSession));
+    }
+
+    private static bool IsUnsafeInMultiplayer(OverlayCommand command) => command is
+        OverlayCommand.ToggleRevealMap or
+        OverlayCommand.ToggleInfiniteMoney or
+        OverlayCommand.ToggleCombatBoost or
+        OverlayCommand.ToggleMaximumPower or
+        OverlayCommand.PromoteSelectedUnits or
+        OverlayCommand.ToggleInstantBuild or
+        OverlayCommand.ToggleBuildAnywhere or
+        OverlayCommand.ToggleSuperWeaponNoCooldown;
+
+    private void EnforceMultiplayerSafety()
+    {
+        DisableRevealMap();
+        DisableInfiniteMoney();
+        DisableOneHitKill();
+        DisableMaximumPower();
+        DisableInstantBuild();
+        DisableBuildAnywhere();
+        superWeaponNoCooldownEnabled = false;
     }
 
     private void StopOverlay()
@@ -476,18 +728,266 @@ internal sealed class CratePicker : IDisposable
             panel.RequestClose();
         if (overlayThread is { IsAlive: true } thread && thread != Thread.CurrentThread)
             thread.Join(2000);
+        overlayThread = null;
     }
 
     private void RequestExit()
     {
         if (exitRequested)
             return;
+        DisableRevealMap();
         DisableInfiniteMoney();
         DisableOneHitKill();
-        Pause();
-        CancelPlanningPreview();
-        StopAutoBuild();
+        DisableMaximumPower();
+        DisableInstantBuild();
+        DisableBuildAnywhere();
+        autoRepairEnabled = false;
+        superWeaponNoCooldownEnabled = false;
+        DisableCratePicker();
         exitRequested = true;
+    }
+
+    private void ToggleRevealMap()
+    {
+        if (revealMapEnabled)
+        {
+            DisableRevealMap();
+            return;
+        }
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+        {
+            Console.WriteLine("[解除战争迷雾未开启] 当前玩家阵营指针无效。");
+            return;
+        }
+
+        try
+        {
+            revealMapHouse = house;
+            CaptureRevealMapState(house);
+            DisableCellFogUpdates();
+            RevealMap(house);
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+        {
+            RestoreCellFogUpdates();
+            revealMapHouse = 0;
+            Console.WriteLine($"[解除战争迷雾未开启] {error.Message}");
+            return;
+        }
+
+        revealMapEnabled = true;
+        nextRevealMapRefreshAt = DateTime.MinValue;
+        Console.WriteLine("[解除战争迷雾已开启] 已显示全部地图区域及其中单位；取消勾选可停止保持全图可见。");
+    }
+
+    private void MaintainRevealMap()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextRevealMapRefreshAt)
+            return;
+        nextRevealMapRefreshAt = now + TimeSpan.FromMilliseconds(250);
+
+        try
+        {
+            var house = ReadUInt32(CurrentPlayer);
+            if (house == 0)
+                return;
+            if (house != revealMapHouse)
+            {
+                RestoreRevealMapState();
+                revealMapHouse = house;
+                CaptureRevealMapState(house);
+                RevealMap(house);
+            }
+            else
+            {
+                WriteBytes(house + HouseSpySatActiveOffset, [1]);
+                WriteBytes(house + HouseVisionaryOffset, [1]);
+                WriteBytes(house + HouseMapIsClearOffset, [1]);
+            }
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+        {
+            nextRevealMapRefreshAt = now + TimeSpan.FromSeconds(1);
+        }
+    }
+
+    private void RevealMap(uint house)
+    {
+        if (ReadUInt32(CurrentPlayer) != house)
+            throw new InvalidOperationException("当前玩家阵营已经变化，已停止解除战争迷雾。");
+        try
+        {
+            WriteBytes(house + HouseSpySatActiveOffset, [1]);
+            WriteBytes(house + HouseVisionaryOffset, [1]);
+            WriteBytes(house + HouseMapIsClearOffset, [1]);
+            RevealMapCells();
+        }
+        catch
+        {
+            WriteBytes(house + HouseVisionaryOffset, [originalVisionary]);
+            WriteBytes(house + HouseMapIsClearOffset, [originalMapIsClear]);
+            WriteBytes(house + HouseSpySatActiveOffset, [originalSpySatActive]);
+            throw;
+        }
+    }
+
+    private void DisableRevealMap()
+    {
+        if (!revealMapEnabled)
+            return;
+        try
+        {
+            if (!IsGameProcessUnavailable())
+                RestoreRevealMapState();
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or GameProcessExitedException)
+        {
+            Console.WriteLine($"[解除战争迷雾恢复失败] {error.Message}");
+        }
+        finally
+        {
+            try
+            {
+                if (!IsGameProcessUnavailable())
+                    RestoreCellFogUpdates();
+            }
+            catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+            {
+                Console.WriteLine($"[解除战争迷雾代码恢复失败] {error.Message}");
+            }
+            revealMapEnabled = false;
+            revealMapHouse = 0;
+            originalVisionary = 0;
+            originalMapIsClear = 0;
+            originalSpySatActive = 0;
+            originalRevealMapCells.Clear();
+            Console.WriteLine("[解除战争迷雾已关闭] 已停止保持全图可见；已揭开的区域仍由游戏正常管理。");
+        }
+    }
+
+    private void CaptureRevealMapState(uint house)
+    {
+        originalVisionary = ReadByte(house + HouseVisionaryOffset);
+        originalMapIsClear = ReadByte(house + HouseMapIsClearOffset);
+        originalSpySatActive = ReadByte(house + HouseSpySatActiveOffset);
+    }
+
+    private void DisableCellFogUpdates()
+    {
+        var actual = ReadBytes(CellFogUpdate, CellFogUpdateOriginalBytes.Length);
+        if (!actual.AsSpan().SequenceEqual(CellFogUpdateOriginalBytes))
+            throw new InvalidOperationException("地图迷雾函数指纹不匹配，未修改游戏代码。");
+        WriteCode(CellFogUpdate, CellFogUpdateDisabledBytes);
+        revealMapFogUpdateDisabled = true;
+    }
+
+    private void RestoreCellFogUpdates()
+    {
+        if (!revealMapFogUpdateDisabled)
+            return;
+        WriteCode(CellFogUpdate, CellFogUpdateOriginalBytes);
+        revealMapFogUpdateDisabled = false;
+    }
+
+    private void RestoreRevealMapState()
+    {
+        if (revealMapHouse != 0)
+            RestoreRevealMapState(revealMapHouse);
+    }
+
+    private void RestoreRevealMapState(uint house)
+    {
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+            foreach (var (pointer, state) in originalRevealMapCells)
+                RestoreRevealMapCell(pointer, state);
+            WriteInt32(Map + MapRedrawsOffset, 1);
+            WriteBytes(house + HouseVisionaryOffset, [originalVisionary]);
+            WriteBytes(house + HouseMapIsClearOffset, [originalMapIsClear]);
+            WriteBytes(house + HouseSpySatActiveOffset, [originalSpySatActive]);
+        }
+        finally
+        {
+            originalRevealMapCells.Clear();
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+    }
+
+    private void RevealMapCells()
+    {
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+
+            var items = ReadUInt32(Map + MapCellsOffset + 4);
+            var capacity = ReadInt32(Map + MapCellsOffset + 8);
+            var validCount = ReadInt32(Map + MapValidCellCountOffset);
+            if (items == 0 || capacity is < 1 or > 262144 || validCount is < 1 or > 262144)
+                throw new InvalidOperationException(
+                    $"地图单元列表异常（容量 {capacity}，有效单元 {validCount}）。");
+
+            var pointers = ReadBytes(items, checked(capacity * 4));
+            originalRevealMapCells.Clear();
+            for (var index = 0; index < capacity; index++)
+            {
+                var pointer = BitConverter.ToUInt32(pointers, index * 4);
+                if (pointer == 0)
+                    continue;
+
+                var state = CaptureRevealMapCell(pointer);
+                originalRevealMapCells[pointer] = state;
+                ApplyRevealMapCell(pointer, state);
+            }
+
+            if (originalRevealMapCells.Count == 0)
+                throw new InvalidOperationException(
+                    $"地图单元数量不一致（读取 {originalRevealMapCells.Count}，预期 {validCount}）。");
+            WriteInt32(Map + MapRedrawsOffset, 1);
+        }
+        catch
+        {
+            foreach (var (pointer, state) in originalRevealMapCells)
+                RestoreRevealMapCell(pointer, state);
+            originalRevealMapCells.Clear();
+            throw;
+        }
+        finally
+        {
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+    }
+
+    private RevealMapCellState CaptureRevealMapCell(uint pointer) => new(
+        ReadBytes(pointer + CellVisibilityOffset, 2),
+        ReadBytes(pointer + CellAltFlagsOffset, CellRevealFlagsLength));
+
+    private void ApplyRevealMapCell(uint pointer, RevealMapCellState state)
+    {
+        var revealed = (byte[])state.RevealFlags.Clone();
+        BitConverter.GetBytes(BitConverter.ToUInt32(revealed, 0x00) | 0x18u)
+            .CopyTo(revealed, 0x00); // Mapped | NoFog
+        Array.Clear(revealed, 0x04, 8); // ShroudCounter and gap coverage
+        revealed[0x0C] = 1; // VisibilityChanged
+        BitConverter.GetBytes(BitConverter.ToUInt32(revealed, 0x14) | 0x03u)
+            .CopyTo(revealed, 0x14); // CenterRevealed | EdgeRevealed
+        WriteBytes(pointer + CellVisibilityOffset, [0xFF, 0xFF]);
+        WriteBytes(pointer + CellAltFlagsOffset, revealed);
+    }
+
+    private void RestoreRevealMapCell(uint pointer, RevealMapCellState state)
+    {
+        WriteBytes(pointer + CellVisibilityOffset, state.Visibility);
+        WriteBytes(pointer + CellAltFlagsOffset, state.RevealFlags);
     }
 
     private void ToggleInfiniteMoney()
@@ -517,7 +1017,7 @@ internal sealed class CratePicker : IDisposable
 
         infiniteMoneyEnabled = true;
         nextInfiniteMoneyRefreshAt = DateTime.MinValue;
-        Console.WriteLine($"[无限资金已开启] 我方资金下限为 {InfiniteMoneyFloor:N0}；再次按 F2 关闭。");
+        Console.WriteLine($"[无限资金已开启] 我方资金下限为 {InfiniteMoneyFloor:N0}；在控制面板中取消勾选即可关闭。");
     }
 
     private void MaintainInfiniteMoney()
@@ -599,7 +1099,7 @@ internal sealed class CratePicker : IDisposable
         oneHitKillHouse = house;
         oneHitKillEnabled = true;
         nextOneHitKillRefreshAt = DateTime.MinValue;
-        Console.WriteLine($"[我方攻防强化已开启] 已修改 {affected} 个现有单位/建筑的实际火力与防御倍率；新单位会自动加入。再次按 F4 恢复。");
+        Console.WriteLine($"[我方攻防强化已开启] 已修改 {affected} 个现有单位/建筑的实际火力与防御倍率；新单位会自动加入。在控制面板中取消勾选即可恢复。");
     }
 
     private void MaintainOneHitKill()
@@ -635,10 +1135,10 @@ internal sealed class CratePicker : IDisposable
         var restoreFailed = false;
         try
         {
-            if (!process.HasExited)
+            if (!IsGameProcessUnavailable())
                 restored = RestoreOneHitKillObjects();
         }
-        catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or GameProcessExitedException)
         {
             restoreFailed = true;
             Console.WriteLine($"[攻防恢复失败] {error.Message}");
@@ -747,658 +1247,6 @@ internal sealed class CratePicker : IDisposable
     private static bool IsReasonableFirepowerMultiplier(double value) =>
         double.IsFinite(value) && value is > 0.0 and <= 1000.0;
 
-    private void LoadAutoBuildTargets()
-    {
-        foreach (var (id, name) in new[]
-                 {
-                     ("ATESLA", "光棱塔"),
-                     ("NASAM", "爱国者导弹")
-                 })
-        {
-            var found = FindBuildingType(id);
-            if (found is not { } buildingType)
-            {
-                Console.WriteLine($"[自动建造] 当前规则中没有 {name}（{id}），已跳过。");
-                continue;
-            }
-
-            autoBuildTargets.Add(new AutoBuildTarget(
-                id, name, buildingType.Index, buildingType.Pointer,
-                ReadInt32(buildingType.Pointer + BuildingTypeBuildCatOffset)));
-        }
-    }
-
-    private (uint Pointer, int Index)? FindBuildingType(string id)
-    {
-        var items = ReadUInt32(BuildingTypeArray + 4);
-        var count = ReadInt32(BuildingTypeArray + 16);
-        if (items == 0 || count is < 1 or > 2000)
-            return null;
-
-        for (var index = 0; index < count; index++)
-        {
-            var pointer = ReadUInt32(items + index * 4L);
-            if (pointer == 0)
-                continue;
-            var rawId = ReadBytes(pointer + AbstractTypeIdOffset, 0x18);
-            var terminator = Array.IndexOf(rawId, (byte)0);
-            var actualId = Encoding.ASCII.GetString(rawId, 0, terminator < 0 ? rawId.Length : terminator);
-            if (actualId.Equals(id, StringComparison.OrdinalIgnoreCase))
-                return (pointer, index);
-        }
-
-        return null;
-    }
-
-    private void StartPlanningPlacement(string id, string name)
-    {
-        var target = autoBuildTargets.FirstOrDefault(candidate => candidate.Id == id);
-        if (target is null)
-        {
-            Console.WriteLine($"[未接受] 当前规则中找不到 {name}（{id}）。");
-            return;
-        }
-
-        if (planningPreviewActive)
-            CancelPlanningPreview();
-        if (ReadUInt32(Map + CurrentBuildingTypeOffset) != 0 || IsConflictingTacticalModeActive())
-        {
-            Console.WriteLine("[未接受] 游戏当前已有建筑或其他鼠标模式，请先完成或右键取消。");
-            return;
-        }
-
-        planningTarget = target;
-        try
-        {
-            if (!TryActivatePlanningPreview(target))
-            {
-                planningTarget = null;
-                Console.WriteLine("[未接受] 游戏当前的放置状态正被其他操作占用。");
-                return;
-            }
-        }
-        catch (Exception error) when (error is InvalidOperationException or OverflowException)
-        {
-            CancelPlanningPreview();
-            Console.WriteLine($"[安全停止] {error.Message}");
-            return;
-        }
-
-        planningPreviewActive = true;
-        Console.WriteLine($"[立即规划] {target.Name}：左键加入后台队列；地形限制已忽略，超出建造范围仍会拒绝；右键取消。");
-    }
-
-    private void PollPlanningMouse()
-    {
-        var leftDown = Native.GetAsyncKeyState(0x01) < 0;
-        var rightDown = Native.GetAsyncKeyState(0x02) < 0;
-        if (planningPreviewActive)
-        {
-            if (rightDown && !rightMouseWasDown)
-            {
-                CancelPlanningPreview();
-                Console.WriteLine("[规划取消] 未记录坐标。");
-            }
-            else if (leftDown && !leftMouseWasDown)
-            {
-                CapturePlannedPlacement();
-            }
-        }
-        leftMouseWasDown = leftDown;
-        rightMouseWasDown = rightDown;
-    }
-
-    private void CapturePlannedPlacement()
-    {
-        var target = planningTarget;
-        if (target is null || ReadUInt32(Map + CurrentBuildingTypeOffset) != target.TypePointer)
-        {
-            CancelPlanningPreview();
-            return;
-        }
-        if (ReadByte(Map + CurrentFoundationProximityValidOffset) == 0)
-        {
-            Console.WriteLine("[位置无效] 当前坐标超出允许建造范围，没有加入队列。");
-            return;
-        }
-        var terrainRestrictionIgnored = ReadByte(Map + CurrentFoundationTerrainValidOffset) == 0;
-
-        var centerX = ReadInt16(Map + CurrentFoundationCenterOffset);
-        var centerY = ReadInt16(Map + CurrentFoundationCenterOffset + 2);
-        var offsetX = ReadInt16(Map + CurrentFoundationTopLeftOffset);
-        var offsetY = ReadInt16(Map + CurrentFoundationTopLeftOffset + 2);
-        var cell = (X: checked((short)(centerX + offsetX)), Y: checked((short)(centerY + offsetY)));
-        if (!IsCellWithinMapBounds(cell))
-        {
-            Console.WriteLine("[位置无效] 当前坐标超出地图范围，没有加入队列。");
-            return;
-        }
-        var markerCells = ReadCurrentFoundationCells();
-        if (markerCells.Count == 0)
-        {
-            Console.WriteLine("[位置无效] 无法取得当前地基单元格，没有加入队列。");
-            return;
-        }
-        var markerSet = markerCells.ToHashSet();
-        if (EnumerateBuildPlans().Any(plan => plan.MarkerCells.Any(markerSet.Contains)))
-        {
-            Console.WriteLine($"[位置重复] ({cell.X},{cell.Y}) 与已有绿色待建标记重叠，请选择其他位置。");
-            return;
-        }
-        if (buildPlans.Count >= 512)
-        {
-            Console.WriteLine("[队列已满] 最多保留 512 个待建坐标，请等待后台完成一部分。");
-            return;
-        }
-
-        var plan = new BuildPlan(nextBuildPlanNumber++, target, cell, markerCells);
-        buildPlans.Enqueue(plan);
-        autoBuildEnabled = true;
-        nextAutoBuildActionAt = DateTime.MinValue;
-        CancelPlanningPreview(preserveCurrentMarker: true);
-        Console.WriteLine($"[已加入 #{plan.Number}] {target.Name} → ({cell.X},{cell.Y})；后台待处理 {buildPlans.Count + (activeBuildPlan is null ? 0 : 1)} 个。");
-        if (terrainRestrictionIgnored)
-        {
-            Console.WriteLine($"[地形限制已忽略 #{plan.Number}] 已记录该坐标；若游戏引擎最终拒绝部署，将自动取消成品并继续队列。");
-        }
-    }
-
-    private void StopAutoBuild()
-    {
-        CancelPlanningPreview();
-        var discarded = buildPlans.Count + (activeBuildPlan is null ? 0 : 1);
-        ClearPlanMarkers(EnumerateBuildPlans().ToArray());
-        buildPlans.Clear();
-        activeBuildPlan = null;
-        autoBuildEnabled = false;
-        if (discarded > 0)
-            Console.WriteLine($"[后台建造停止] 已清除 {discarded} 个任务；已经提交给游戏的生产或放置事件不会撤回。");
-    }
-
-    private void TickAutoBuild()
-    {
-        var now = DateTime.UtcNow;
-        RefreshPlanMarkers(now);
-        if (now < nextAutoBuildActionAt)
-            return;
-        if (activeBuildPlan is null)
-        {
-            if (!buildPlans.TryDequeue(out activeBuildPlan))
-            {
-                autoBuildEnabled = false;
-                return;
-            }
-            Console.WriteLine($"[后台开始 #{activeBuildPlan.Number}] {activeBuildPlan.Target.Name} → ({activeBuildPlan.Cell.X},{activeBuildPlan.Cell.Y})。");
-        }
-
-        var plan = activeBuildPlan!;
-        var state = ReadDefenseFactoryState(plan.Target);
-        switch (plan.Stage)
-        {
-            case BuildPlanStage.WaitingToProduce:
-                if (state.HasRequestedProduct)
-                {
-                    plan.Stage = BuildPlanStage.WaitingForProduct;
-                    plan.StageStartedAt = now;
-                    nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                    return;
-                }
-                if (state.HasSameCategoryProduct)
-                {
-                    nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(500);
-                    return;
-                }
-                if (plan.Target.UnavailableUntil > now)
-                {
-                    nextAutoBuildActionAt = plan.Target.UnavailableUntil;
-                    return;
-                }
-                QueueProduction(plan.Target);
-                plan.ProductionAttempts++;
-                plan.Stage = BuildPlanStage.WaitingForProduct;
-                plan.StageStartedAt = now;
-                Console.WriteLine($"[后台 #{plan.Number}] 已请求生产 {plan.Target.Name}。");
-                nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                return;
-
-            case BuildPlanStage.WaitingForProduct:
-                if (state.HasRequestedProduct)
-                {
-                    if (!state.IsReady)
-                    {
-                        nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                        return;
-                    }
-                    RemovePlanMarker(plan);
-                    QueuePlacement(plan.Target, plan.Cell);
-                    plan.Stage = BuildPlanStage.WaitingForPlacementResult;
-                    plan.StageStartedAt = now;
-                    Console.WriteLine($"[后台 #{plan.Number}] 成品完成，已提交预定坐标 ({plan.Cell.X},{plan.Cell.Y})。");
-                    nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                    return;
-                }
-                if (now - plan.StageStartedAt < TimeSpan.FromSeconds(3))
-                {
-                    nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                    return;
-                }
-                if (plan.ProductionAttempts >= 3)
-                {
-                    CompleteActiveBuildPlan(false, "连续三次无法开始生产");
-                    return;
-                }
-                plan.Target.UnavailableUntil = now + TimeSpan.FromSeconds(5);
-                plan.Stage = BuildPlanStage.WaitingToProduce;
-                nextAutoBuildActionAt = plan.Target.UnavailableUntil;
-                return;
-
-            case BuildPlanStage.WaitingForPlacementResult:
-                if (!state.HasRequestedProduct)
-                {
-                    CompleteActiveBuildPlan(true, "已放置");
-                    return;
-                }
-                if (now - plan.StageStartedAt < TimeSpan.FromSeconds(3))
-                {
-                    nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                    return;
-                }
-                QueueAbandon(plan.Target);
-                plan.AbandonAttempts = 1;
-                plan.Stage = BuildPlanStage.WaitingForAbandon;
-                plan.StageStartedAt = now;
-                Console.WriteLine($"[后台 #{plan.Number}] 预定坐标已经失效，已安全取消该成品，避免队列卡住。");
-                nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                return;
-
-            case BuildPlanStage.WaitingForAbandon:
-                if (!state.HasRequestedProduct)
-                {
-                    CompleteActiveBuildPlan(false, "部署时坐标失效");
-                    return;
-                }
-                if (now - plan.StageStartedAt < TimeSpan.FromSeconds(3))
-                {
-                    nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                    return;
-                }
-                if (plan.AbandonAttempts >= 3)
-                {
-                    StopStuckBuildQueue(plan);
-                    return;
-                }
-                QueueAbandon(plan.Target);
-                plan.AbandonAttempts++;
-                plan.StageStartedAt = now;
-                nextAutoBuildActionAt = now + TimeSpan.FromMilliseconds(100);
-                return;
-        }
-    }
-
-    private void CompleteActiveBuildPlan(bool success, string result)
-    {
-        var plan = activeBuildPlan!;
-        RemovePlanMarker(plan);
-        Console.WriteLine($"[后台 {(success ? "完成" : "跳过")} #{plan.Number}] {plan.Target.Name} ({plan.Cell.X},{plan.Cell.Y})：{result}。");
-        activeBuildPlan = null;
-        autoBuildEnabled = buildPlans.Count > 0;
-        nextAutoBuildActionAt = DateTime.UtcNow + TimeSpan.FromMilliseconds(500);
-    }
-
-    private void StopStuckBuildQueue(BuildPlan plan)
-    {
-        var discarded = buildPlans.Count;
-        ClearPlanMarkers(EnumerateBuildPlans().ToArray());
-        buildPlans.Clear();
-        activeBuildPlan = null;
-        autoBuildEnabled = false;
-        Console.WriteLine($"[安全停止] #{plan.Number} 的成品连续三次无法取消，后台已停止并清除后续 {discarded} 个任务；请在建造栏手动处理该成品。");
-    }
-
-    private bool TryActivatePlanningPreview(AutoBuildTarget target)
-    {
-        if (ReadUInt32(Map + CurrentBuildingOffset) != 0 ||
-            ReadUInt32(Map + CurrentBuildingTypeOffset) != 0 ||
-            ReadUInt32(Map + CurrentFoundationDataOffset) != 0 ||
-            IsConflictingTacticalModeActive())
-            return false;
-
-        var layout = ReadFoundationLayout(target);
-        var emptyCell = ReadInt32(0x8A03F8);
-        var topLeft = PackCell(layout.TopLeftX, layout.TopLeftY);
-        var ownerIndex = FindCurrentHouseIndex();
-        var suspended = false;
-        try
-        {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
-            suspended = true;
-            if (ReadUInt32(Map + CurrentBuildingOffset) != 0 ||
-                ReadUInt32(Map + CurrentBuildingTypeOffset) != 0 ||
-                ReadUInt32(Map + CurrentFoundationDataOffset) != 0 ||
-                IsConflictingTacticalModeActive())
-                return false;
-
-            WriteBytes(ActiveFoundationBuffer, layout.Data);
-            WriteInt32(Map + CurrentFoundationCenterOffset, emptyCell);
-            WriteInt32(Map + CurrentFoundationTopLeftOffset, unchecked((int)topLeft));
-            WriteBytes(Map + CurrentFoundationProximityValidOffset, [0]);
-            WriteBytes(Map + CurrentFoundationTerrainValidOffset, [0]);
-            WriteInt32(Map + CurrentFoundationDataOffset, checked((int)ActiveFoundationBuffer));
-            WriteInt32(Map + CurrentBuildingOwnerOffset, ownerIndex);
-            WriteInt32(Map + CurrentBuildingOffset, 0);
-            WriteInt32(Map + CurrentBuildingTypeOffset, unchecked((int)target.TypePointer));
-            return true;
-        }
-        finally
-        {
-            if (suspended)
-                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
-        }
-    }
-
-    private FoundationLayout ReadFoundationLayout(AutoBuildTarget target)
-    {
-        var source = ReadUInt32(target.TypePointer + BuildingTypeFoundationDataOffset);
-        if (source == 0)
-            throw new InvalidOperationException($"{target.Name} 没有有效地基数据，已拒绝显示预览。");
-        var data = ReadBytes(source, 120 * 4);
-        var cellCount = 0;
-        var minX = int.MaxValue;
-        var minY = int.MaxValue;
-        var maxX = int.MinValue;
-        var maxY = int.MinValue;
-        for (var index = 0; index < 120; index++)
-        {
-            var x = BitConverter.ToInt16(data, index * 4);
-            var y = BitConverter.ToInt16(data, index * 4 + 2);
-            if (x == 0x7FFF && y == 0x7FFF)
-            {
-                if (cellCount == 0)
-                    break;
-                var width = maxX - minX + 1;
-                var height = maxY - minY + 1;
-                return new FoundationLayout(
-                    data, checked((short)(-(width - 1) / 2)), checked((short)(-(height - 1) / 2)));
-            }
-            if (x is < -64 or > 64 || y is < -64 or > 64)
-                break;
-            cellCount++;
-            minX = Math.Min(minX, x);
-            minY = Math.Min(minY, y);
-            maxX = Math.Max(maxX, x);
-            maxY = Math.Max(maxY, y);
-        }
-        throw new InvalidOperationException($"{target.Name} 的地基数据异常或缺少结束标记，已拒绝写入。");
-    }
-
-    private void CancelPlanningPreview(bool preserveCurrentMarker = false)
-    {
-        var target = planningTarget;
-        if (target is null)
-        {
-            planningPreviewActive = false;
-            return;
-        }
-
-        var suspended = false;
-        try
-        {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
-            suspended = true;
-            var currentType = ReadUInt32(Map + CurrentBuildingTypeOffset);
-            if (ReadUInt32(Map + CurrentBuildingOffset) == 0 &&
-                ReadUInt32(Map + CurrentFoundationDataOffset) == ActiveFoundationBuffer &&
-                (currentType == target.TypePointer || currentType == 0))
-            {
-                if (preserveCurrentMarker)
-                    ConvertCurrentFoundationToPersistentMarker();
-                else
-                    UnmarkCurrentFoundation();
-                var emptyCell = ReadInt32(0x8A03F8);
-                WriteInt32(Map + CurrentBuildingTypeOffset, 0);
-                WriteInt32(Map + CurrentBuildingOwnerOffset, -1);
-                WriteInt32(Map + CurrentFoundationDataOffset, 0);
-                WriteInt32(Map + CurrentFoundationCenterOffset, emptyCell);
-                WriteInt32(Map + CurrentFoundationTopLeftOffset, emptyCell);
-                WriteBytes(Map + CurrentFoundationProximityValidOffset, [0]);
-                WriteBytes(Map + CurrentFoundationTerrainValidOffset, [0]);
-            }
-        }
-        finally
-        {
-            if (suspended)
-                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
-        }
-        planningTarget = null;
-        planningPreviewActive = false;
-    }
-
-    private void UnmarkCurrentFoundation()
-    {
-        var center = ReadInt32(Map + CurrentFoundationCenterOffset);
-        if (center == ReadInt32(0x8A03F8))
-            return;
-        var centerX = (short)center;
-        var centerY = (short)(center >> 16);
-        var topLeft = ReadInt32(Map + CurrentFoundationTopLeftOffset);
-        var baseX = centerX + (short)topLeft;
-        var baseY = centerY + (short)(topLeft >> 16);
-        var cellsItems = ReadUInt32(Map + MapCellsItemsOffset);
-        if (cellsItems == 0)
-            return;
-
-        var foundation = ReadBytes(ActiveFoundationBuffer, 120 * 4);
-        for (var index = 0; index < 120; index++)
-        {
-            var offsetX = BitConverter.ToInt16(foundation, index * 4);
-            var offsetY = BitConverter.ToInt16(foundation, index * 4 + 2);
-            if (offsetX == 0x7FFF && offsetY == 0x7FFF)
-                break;
-            var x = baseX + offsetX;
-            var y = baseY + offsetY;
-            if (x is < 0 or >= 512 || y is < 0 or >= 512)
-                continue;
-            var cell = ReadUInt32(cellsItems + (y * 512L + x) * 4);
-            if (cell != 0)
-                WriteInt32(cell + CellPlacementFlagOffset,
-                    ReadInt32(cell + CellPlacementFlagOffset) & ~ActivePlacementFlag);
-        }
-    }
-
-    private void ConvertCurrentFoundationToPersistentMarker()
-    {
-        var cellsItems = ReadUInt32(Map + MapCellsItemsOffset);
-        if (cellsItems == 0)
-            throw new InvalidOperationException("无法取得地图单元格，已拒绝保留待建标记。");
-        foreach (var cellLocation in ReadCurrentFoundationCells())
-        {
-            var cell = ReadUInt32(cellsItems + (cellLocation.Y * 512L + cellLocation.X) * 4);
-            if (cell == 0)
-                continue;
-            var flags = ReadInt32(cell + CellPlacementFlagOffset);
-            var updated = (flags & ~ActivePlacementFlag) | PersistentMarkerFlag;
-            if (updated != flags)
-                WriteInt32(cell + CellPlacementFlagOffset, updated);
-        }
-    }
-
-    private IReadOnlyList<(short X, short Y)> ReadCurrentFoundationCells()
-    {
-        var foundation = ReadUInt32(Map + CurrentFoundationDataOffset);
-        var center = ReadInt32(Map + CurrentFoundationCenterOffset);
-        if (foundation == 0 || center == ReadInt32(0x8A03F8))
-            return [];
-
-        var topLeft = ReadInt32(Map + CurrentFoundationTopLeftOffset);
-        var baseX = (short)center + (short)topLeft;
-        var baseY = (short)(center >> 16) + (short)(topLeft >> 16);
-        var data = ReadBytes(foundation, 120 * 4);
-        var cells = new List<(short X, short Y)>();
-        for (var index = 0; index < 120; index++)
-        {
-            var offsetX = BitConverter.ToInt16(data, index * 4);
-            var offsetY = BitConverter.ToInt16(data, index * 4 + 2);
-            if (offsetX == 0x7FFF && offsetY == 0x7FFF)
-                return cells;
-            var x = baseX + offsetX;
-            var y = baseY + offsetY;
-            if (x is < 0 or >= 512 || y is < 0 or >= 512)
-                return [];
-            cells.Add((checked((short)x), checked((short)y)));
-        }
-        return [];
-    }
-
-    private IEnumerable<BuildPlan> EnumerateBuildPlans()
-    {
-        if (activeBuildPlan is not null)
-            yield return activeBuildPlan;
-        foreach (var plan in buildPlans)
-            yield return plan;
-    }
-
-    private void RefreshPlanMarkers(DateTime now)
-    {
-        if (now < nextMarkerRefreshAt)
-            return;
-        nextMarkerRefreshAt = now + TimeSpan.FromMilliseconds(250);
-        var plans = EnumerateBuildPlans().Where(plan => plan.MarkerVisible).ToArray();
-        if (plans.Length == 0 || !PlanMarkerCellsNeedRefresh(plans))
-            return;
-
-        var suspended = false;
-        try
-        {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
-            suspended = true;
-            SetPlanMarkerCells(plans, true);
-        }
-        finally
-        {
-            if (suspended)
-                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
-        }
-    }
-
-    private bool PlanMarkerCellsNeedRefresh(IEnumerable<BuildPlan> plans)
-    {
-        var cellsItems = ReadUInt32(Map + MapCellsItemsOffset);
-        if (cellsItems == 0)
-            return false;
-        foreach (var cellLocation in plans.SelectMany(plan => plan.MarkerCells).Distinct())
-        {
-            var cell = ReadUInt32(cellsItems + (cellLocation.Y * 512L + cellLocation.X) * 4);
-            if (cell != 0 && (ReadInt32(cell + CellPlacementFlagOffset) & PersistentMarkerFlag) == 0)
-                return true;
-        }
-        return false;
-    }
-
-    private void RemovePlanMarker(BuildPlan plan)
-    {
-        if (!plan.MarkerVisible)
-            return;
-        var suspended = false;
-        try
-        {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
-            suspended = true;
-            SetPlanMarkerCells([plan], false);
-            plan.MarkerVisible = false;
-        }
-        finally
-        {
-            if (suspended)
-                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
-        }
-    }
-
-    private void ClearPlanMarkers(IReadOnlyCollection<BuildPlan> plans)
-    {
-        var visible = plans.Where(plan => plan.MarkerVisible).ToArray();
-        if (visible.Length == 0)
-            return;
-
-        var suspended = false;
-        try
-        {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
-            suspended = true;
-            SetPlanMarkerCells(visible, false);
-            foreach (var plan in visible)
-                plan.MarkerVisible = false;
-        }
-        finally
-        {
-            if (suspended)
-                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
-        }
-    }
-
-    private void SetPlanMarkerCells(IEnumerable<BuildPlan> plans, bool marked)
-    {
-        var cellsItems = ReadUInt32(Map + MapCellsItemsOffset);
-        if (cellsItems == 0)
-            return;
-        foreach (var cellLocation in plans.SelectMany(plan => plan.MarkerCells).Distinct())
-        {
-            var cell = ReadUInt32(cellsItems + (cellLocation.Y * 512L + cellLocation.X) * 4);
-            if (cell == 0)
-                continue;
-            var flags = ReadInt32(cell + CellPlacementFlagOffset);
-            var updated = marked ? flags | PersistentMarkerFlag : flags & ~PersistentMarkerFlag;
-            if (updated != flags)
-                WriteInt32(cell + CellPlacementFlagOffset, updated);
-        }
-    }
-
-    private bool IsCellWithinMapBounds((short X, short Y) cell)
-    {
-        var left = ReadInt32(Map + MapBoundsOffset);
-        var top = ReadInt32(Map + MapBoundsOffset + 4);
-        var right = ReadInt32(Map + MapBoundsOffset + 8);
-        var bottom = ReadInt32(Map + MapBoundsOffset + 12);
-        return cell.X >= left && cell.X <= right && cell.Y >= top && cell.Y <= bottom;
-    }
-
-    private static uint PackCell(short x, short y) =>
-        (uint)(ushort)x | (uint)(ushort)y << 16;
-
-    private bool IsConflictingTacticalModeActive()
-    {
-        var flags = ReadBytes(Map + DisplayModeFlagsOffset, 5);
-        return flags.Any(value => value != 0) || ReadInt32(Map + CurrentSuperWeaponOffset) != -1;
-    }
-
-    private FactoryState ReadDefenseFactoryState(AutoBuildTarget target)
-    {
-        var items = ReadUInt32(FactoryArray + 4);
-        var count = ReadInt32(FactoryArray + 16);
-        if (items == 0 || count is < 0 or > 1000)
-            return default;
-
-        var currentPlayer = ReadUInt32(CurrentPlayer);
-        var hasSameCategoryProduct = false;
-        for (var index = 0; index < count; index++)
-        {
-            var factory = ReadUInt32(items + index * 4L);
-            if (factory == 0 || ReadUInt32(factory + FactoryOwnerOffset) != currentPlayer)
-                continue;
-            var product = ReadUInt32(factory + FactoryObjectOffset);
-            if (product == 0)
-                continue;
-            var productType = ReadUInt32(product + BuildingTypeOffset);
-            if (productType == target.TypePointer)
-                return new FactoryState(
-                    true, true, ReadByte(factory + FactoryIsSuspendedOffset) != 0);
-            if (productType != 0 && VectorContains(BuildingTypeArray, productType) &&
-                ReadInt32(productType + BuildingTypeBuildCatOffset) == target.BuildCategory)
-                hasSameCategoryProduct = true;
-        }
-
-        return new FactoryState(false, hasSameCategoryProduct, false);
-    }
-
     private void Tick()
     {
         var now = DateTime.UtcNow;
@@ -1407,8 +1255,6 @@ internal sealed class CratePicker : IDisposable
             var state = units[index];
             if (IsCapturedUnitValid(state.Unit))
             {
-                if (state.InvalidSince is not null)
-                    Console.WriteLine($"[恢复] 单位 {state.Unit.Id} 已恢复有效状态，重新加入调度。");
                 state.InvalidSince = null;
                 continue;
             }
@@ -1416,34 +1262,35 @@ internal sealed class CratePicker : IDisposable
             if (state.InvalidSince is null)
             {
                 state.InvalidSince = now;
+                pendingMissions.Remove(state.Unit.Id);
                 state.ActiveCrate = null;
                 state.LastCommandAt = DateTime.MinValue;
                 ResetTargetProgress(state);
                 ResetWaitingState(state);
-                Console.WriteLine($"[等待确认] 单位 {state.Unit.Id} 暂时无效，已释放箱子认领。");
                 continue;
             }
 
             if (now - state.InvalidSince.Value < TimeSpan.FromSeconds(2))
                 continue;
 
-            Console.WriteLine($"[移除] 单位 {state.Unit.Id} 连续 2 秒无效，判定为阵亡或已离场。");
             units.RemoveAt(index);
         }
 
         if (units.Count == 0)
         {
-            enabled = false;
-            recentlyCollected.Clear();
-            Console.WriteLine("[停止] 全部锁定单位均已失效，请重新框选后按 F5。");
+            DisableCrateActionLines();
             return;
         }
 
         var usableUnits = units.Where(state => state.InvalidSince is null).ToArray();
         if (usableUnits.Length == 0)
+        {
+            RefreshCrateActionLines([]);
             return;
+        }
 
         var crates = ReadActiveCrates();
+        var crateByKey = crates.ToDictionary(crate => new CrateKey(crate.Index, crate.X, crate.Y));
         foreach (var expired in recentlyCollected
                      .Where(entry => entry.Value <= now)
                      .Select(entry => entry.Key)
@@ -1451,6 +1298,7 @@ internal sealed class CratePicker : IDisposable
             recentlyCollected.Remove(expired);
 
         var claimed = new HashSet<CrateKey>();
+        var collectedThisTick = new HashSet<CrateKey>();
         foreach (var state in usableUnits)
         {
             foreach (var expired in state.UnreachableCrates
@@ -1463,17 +1311,24 @@ internal sealed class CratePicker : IDisposable
             if (state.ActiveCrate is { } reached &&
                 DistanceSquared(location, (reached.X, reached.Y)) == 0)
             {
-                recentlyCollected[new CrateKey(reached.Index, reached.X, reached.Y)] =
-                    now + TimeSpan.FromMilliseconds(750);
+                var reachedKey = new CrateKey(reached.Index, reached.X, reached.Y);
+                collectedThisTick.Add(reachedKey);
+                recentlyCollected[reachedKey] = now + TimeSpan.FromSeconds(3);
                 state.ActiveCrate = null;
                 state.LastCommandAt = DateTime.MinValue;
                 ResetTargetProgress(state);
             }
 
-            if (state.ActiveCrate is { } previous && !crates.Contains(previous))
+            if (state.ActiveCrate is { } previous)
             {
-                state.ActiveCrate = null;
-                ResetTargetProgress(state);
+                var previousKey = new CrateKey(previous.Index, previous.X, previous.Y);
+                if (!crateByKey.ContainsKey(previousKey) || !claimed.Add(previousKey))
+                {
+                    state.ActiveCrate = null;
+                    state.LastCommandAt = DateTime.MinValue;
+                    ResetTargetProgress(state);
+                    QueueGuard(state.Unit);
+                }
             }
 
             if (state.ActiveCrate is { } target)
@@ -1490,13 +1345,24 @@ internal sealed class CratePicker : IDisposable
                     state.ActiveCrate = null;
                     state.LastCommandAt = DateTime.MinValue;
                     ResetTargetProgress(state);
-                    Console.WriteLine(
-                        $"[改派] 单位 {state.Unit.Id} 连续 3 秒没有移动，8 秒内跳过箱子 #{target.Index} ({target.X},{target.Y})。");
                 }
             }
 
-            if (state.ActiveCrate is { } active)
-                claimed.Add(new CrateKey(active.Index, active.X, active.Y));
+        }
+
+        if (collectedThisTick.Count != 0)
+        {
+            foreach (var state in usableUnits)
+            {
+                if (state.ActiveCrate is not { } target ||
+                    !collectedThisTick.Contains(new CrateKey(target.Index, target.X, target.Y)))
+                    continue;
+                claimed.Remove(new CrateKey(target.Index, target.X, target.Y));
+                state.ActiveCrate = null;
+                state.LastCommandAt = DateTime.MinValue;
+                ResetTargetProgress(state);
+                QueueGuard(state.Unit);
+            }
         }
 
         foreach (var state in usableUnits)
@@ -1523,7 +1389,6 @@ internal sealed class CratePicker : IDisposable
                     state.LastTargetObservedCell = location;
                     state.LastTargetProgressAt = now;
                     claimed.Add(new CrateKey(nearest.Index, nearest.X, nearest.Y));
-                    Console.WriteLine($"[指令] 单位 {state.Unit.Id} → 箱子 #{nearest.Index} ({nearest.X},{nearest.Y})");
                     continue;
                 }
 
@@ -1532,14 +1397,161 @@ internal sealed class CratePicker : IDisposable
             }
 
             ResetWaitingState(state);
-            if (now - state.LastCommandAt >= TimeSpan.FromMilliseconds(750))
-            {
-                var target = state.ActiveCrate!;
-                QueueMove(state.Unit, target.X, target.Y);
-                state.LastCommandAt = now;
-            }
         }
 
+        if (crateRouteLinesEnabled)
+        {
+            EnableCrateActionLines();
+            RefreshCrateActionLines(usableUnits);
+        }
+        else
+        {
+            DisableCrateActionLines();
+        }
+    }
+
+    private void EnableCrateActionLines()
+    {
+        if (crateActionLinesActive)
+            return;
+        var cave = nint.Zero;
+        var patchInstalled = false;
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+            var actual = ReadBytes(ActionLineSelectionCheck,
+                ActionLineSelectionOriginalBytes.Length);
+            if (!actual.AsSpan().SequenceEqual(ActionLineSelectionOriginalBytes))
+                throw new InvalidOperationException("行动路线渲染函数指纹不匹配。");
+
+            cave = Native.VirtualAllocEx(handle, 0, CrateActionLineCodeCaveSize,
+                Native.MemCommit | Native.MemReserve, Native.PageExecuteReadWrite);
+            if (cave == 0)
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "分配行动路线渲染区失败");
+
+            var caveAddress = cave.ToInt64();
+            var countAddress = caveAddress + 64;
+            var tableAddress = countAddress + 4;
+            WriteBytes(caveAddress, new byte[CrateActionLineCodeCaveSize]);
+            var filterCode = CreateCrateActionLineFilter(countAddress, tableAddress);
+            WriteBytes(caveAddress, filterCode);
+            if (!Native.FlushInstructionCache(handle, cave, (nuint)filterCode.Length))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "刷新行动路线指令缓存失败");
+
+            var patch = Enumerable.Repeat((byte)0x90,
+                ActionLineSelectionOriginalBytes.Length).ToArray();
+            patch[0] = 0xE8;
+            BitConverter.GetBytes(checked((int)(caveAddress - (ActionLineSelectionCheck + 5))))
+                .CopyTo(patch, 1);
+            WriteCode(ActionLineSelectionCheck, patch);
+            patchInstalled = true;
+
+            originalActionLinesEnabled = ReadByte(ActionLinesEnabled);
+            WriteBytes(ActionLinesEnabled, [1]);
+            crateActionLineCodeCave = cave;
+            crateActionLineCountAddress = countAddress;
+            crateActionLineTableAddress = tableAddress;
+            crateActionLinesActive = true;
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or OverflowException)
+        {
+            var safeToFree = !patchInstalled;
+            if (patchInstalled)
+            {
+                try
+                {
+                    WriteCode(ActionLineSelectionCheck, ActionLineSelectionOriginalBytes);
+                    safeToFree = true;
+                }
+                catch (GameProcessExitedException)
+                {
+                    safeToFree = true;
+                }
+                catch (Win32Exception)
+                {
+                    crateActionLineCodeCave = cave;
+                    crateActionLineCountAddress = cave.ToInt64() + 64;
+                    crateActionLineTableAddress = crateActionLineCountAddress + 4;
+                    crateActionLinesActive = true;
+                }
+            }
+            if (cave != 0 && safeToFree)
+                Native.VirtualFreeEx(handle, cave, 0, Native.MemRelease);
+            crateRouteLinesEnabled = false;
+        }
+        finally
+        {
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+    }
+
+    private void RefreshCrateActionLines(IEnumerable<UnitState> usableUnits)
+    {
+        if (!crateActionLinesActive)
+            return;
+        var usableSet = usableUnits.ToHashSet();
+        var pointers = units
+            .Where(state => usableSet.Contains(state) && state.ActiveCrate is not null)
+            .Select(state => state.Unit.Pointer)
+            .Distinct()
+            .Take(MaximumCrateActionLineUnits)
+            .ToArray();
+
+        WriteInt32(crateActionLineCountAddress, 0);
+        if (pointers.Length == 0)
+            return;
+        var pointerBytes = new byte[pointers.Length * sizeof(uint)];
+        Buffer.BlockCopy(pointers, 0, pointerBytes, 0, pointerBytes.Length);
+        WriteBytes(crateActionLineTableAddress, pointerBytes);
+        WriteInt32(crateActionLineCountAddress, pointers.Length);
+        WriteInt32(ActionLineTimerStart, ReadInt32(CurrentFrame));
+        WriteInt32(ActionLineTimerTimeLeft, 25);
+    }
+
+    private void DisableCrateActionLines()
+    {
+        if (!crateActionLinesActive)
+            return;
+        var codeRestored = false;
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+            WriteInt32(crateActionLineCountAddress, 0);
+            WriteCode(ActionLineSelectionCheck, ActionLineSelectionOriginalBytes);
+            codeRestored = true;
+            WriteBytes(ActionLinesEnabled, [originalActionLinesEnabled]);
+        }
+        finally
+        {
+            if (codeRestored || IsGameProcessUnavailable())
+            {
+                if (crateActionLineCodeCave != 0)
+                    Native.VirtualFreeEx(handle, crateActionLineCodeCave, 0, Native.MemRelease);
+                crateActionLinesActive = false;
+                crateActionLineCodeCave = 0;
+                crateActionLineCountAddress = 0;
+                crateActionLineTableAddress = 0;
+            }
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+    }
+
+    private static byte[] CreateCrateActionLineFilter(long countAddress, long tableAddress)
+    {
+        var code = new List<byte>(48);
+        code.AddRange(Convert.FromHexString("8A868300000084C0752351528B0D"));
+        code.AddRange(BitConverter.GetBytes(checked((uint)countAddress)));
+        code.Add(0xBA);
+        code.AddRange(BitConverter.GetBytes(checked((uint)tableAddress)));
+        code.AddRange(Convert.FromHexString(
+            "85C9740A3932740A83C20449EBF230C0EB02B0015A5984C0C3"));
+        return [.. code];
     }
 
     private List<CapturedUnit> CaptureSelectedUnits()
@@ -1581,6 +1593,14 @@ internal sealed class CratePicker : IDisposable
         }
     }
 
+    private bool IsMultiplayerSession()
+    {
+        var gameMode = ReadInt32(Session);
+        if (gameMode is not (3 or 4)) // GameMode::LAN / GameMode::Internet
+            return false;
+        return ReadInt32(MultiplayerPlayerCount) > 1;
+    }
+
     private void WaitAtSafePlace(UnitState state, DateTime now)
     {
         var currentCell = ReadUnitCell(state.Unit.Pointer);
@@ -1595,13 +1615,11 @@ internal sealed class CratePicker : IDisposable
             if (state.SafeCell is { } target && DistanceSquared(currentCell, target) > 4)
             {
                 QueueMove(state.Unit, target.X, target.Y);
-                Console.WriteLine($"[待命] 单位 {state.Unit.Id} → 基地 ({target.X},{target.Y})");
             }
             else
             {
                 QueueGuard(state.Unit);
                 state.SafeCell = null;
-                Console.WriteLine($"[待命] 单位 {state.Unit.Id} 原地警戒。");
             }
             state.LastCommandAt = now;
             return;
@@ -1622,7 +1640,6 @@ internal sealed class CratePicker : IDisposable
             QueueGuard(state.Unit);
             state.SafeCell = null;
             state.LastCommandAt = now;
-            Console.WriteLine($"[待命] 单位 {state.Unit.Id} 已到达基地，原地警戒。");
             return;
         }
 
@@ -1631,12 +1648,387 @@ internal sealed class CratePicker : IDisposable
             QueueGuard(state.Unit);
             state.SafeCell = null;
             state.LastCommandAt = now;
-            Console.WriteLine($"[待命] 单位 {state.Unit.Id} 无法到达基地，改为原地警戒。");
             return;
         }
 
         QueueMove(state.Unit, destination.X, destination.Y);
         state.LastCommandAt = now;
+    }
+
+    private void ToggleMaximumPower()
+    {
+        if (maximumPowerEnabled)
+        {
+            DisableMaximumPower();
+            return;
+        }
+
+        try
+        {
+            EnableMaximumPowerPatch();
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException)
+        {
+            Console.WriteLine($"[最高电力未开启] {error.Message}");
+            return;
+        }
+        maximumPowerEnabled = true;
+        nextPowerRefreshAt = DateTime.MinValue;
+        MaintainMaximumPower();
+        Console.WriteLine("[最高电力已开启] 电力输出已锁定为充足状态。");
+    }
+
+    private void MaintainMaximumPower()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextPowerRefreshAt)
+            return;
+        nextPowerRefreshAt = now + TimeSpan.FromMilliseconds(100);
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+            return;
+        var drain = Math.Max(0, ReadInt32(house + HousePowerDrainOffset));
+        StopTimer(house + HousePowerBlackoutTimerOffset);
+        WriteInt32(house + HousePowerOutputOffset, Math.Max(LockedPowerOutput, drain + 100_000));
+        WriteBytes(house + HouseRecheckPowerOffset, [0]);
+    }
+
+    private void DisableMaximumPower()
+    {
+        if (!maximumPowerEnabled)
+            return;
+        maximumPowerEnabled = false;
+        DisableMaximumPowerPatch();
+        var house = ReadUInt32(CurrentPlayer);
+        if (house != 0)
+            WriteBytes(house + HouseRecheckPowerOffset, [1]);
+        Console.WriteLine("[最高电力已关闭] 已交还游戏重新计算电力。");
+    }
+
+    private void EnableMaximumPowerPatch()
+    {
+        var actual = ReadBytes(UpdatePowerFinalComparison, UpdatePowerOriginalBytes.Length);
+        if (!actual.AsSpan().SequenceEqual(UpdatePowerOriginalBytes))
+            throw new InvalidOperationException("电力刷新函数指纹不匹配，未修改游戏代码。");
+
+        maximumPowerCodeCave = Native.VirtualAllocEx(handle, 0, 32,
+            Native.MemCommit | Native.MemReserve, Native.PageExecuteReadWrite);
+        if (maximumPowerCodeCave == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "分配电力补丁代码区失败");
+
+        var caveAddress = maximumPowerCodeCave.ToInt64();
+        var code = new List<byte>(20);
+        code.AddRange(Convert.FromHexString("C786A453000040420F00")); // PowerOutput = 1,000,000
+        code.AddRange(UpdatePowerOriginalBytes); // mov ecx,[esi+PowerOutput]
+        code.Add(0xE9);
+        code.AddRange(BitConverter.GetBytes(checked((int)
+            (UpdatePowerFinalComparison + UpdatePowerOriginalBytes.Length - (caveAddress + code.Count + 4)))));
+        WriteBytes(caveAddress, [.. code]);
+
+        var jump = new byte[UpdatePowerOriginalBytes.Length];
+        jump[0] = 0xE9;
+        BitConverter.GetBytes(checked((int)(caveAddress - (UpdatePowerFinalComparison + 5))))
+            .CopyTo(jump, 1);
+        jump[5] = 0x90;
+        WriteCode(UpdatePowerFinalComparison, jump);
+        var house = ReadUInt32(CurrentPlayer);
+        if (house != 0)
+            WriteBytes(house + HouseRecheckPowerOffset, [1]);
+    }
+
+    private void DisableMaximumPowerPatch()
+    {
+        try
+        {
+            if (ReadBytes(UpdatePowerFinalComparison, 1)[0] == 0xE9)
+                WriteCode(UpdatePowerFinalComparison, UpdatePowerOriginalBytes);
+        }
+        finally
+        {
+            if (maximumPowerCodeCave != 0)
+            {
+                Native.VirtualFreeEx(handle, maximumPowerCodeCave, 0, Native.MemRelease);
+                maximumPowerCodeCave = 0;
+            }
+        }
+    }
+
+    private int PromoteSelectedUnits()
+    {
+        var selected = CaptureSelectedUnits();
+        foreach (var unit in selected)
+            WriteSingle(unit.Pointer + TechnoVeterancyOffset, 2.0f);
+        Console.WriteLine(selected.Count == 0
+            ? "[选中单位升星] 未找到己方可移动单位，请先在游戏中选择单位。"
+            : $"[选中单位升星] 已将 {selected.Count} 个单位提升为三级精英。" );
+        return selected.Count;
+    }
+
+    private int ArrangeSelectedFormation()
+    {
+        var selected = CaptureSelectedUnits();
+        if (selected.Count == 0)
+            return 0;
+
+        const int spacing = 1;
+        var columns = (int)Math.Ceiling(Math.Sqrt(selected.Count));
+        var rows = (int)Math.Ceiling(selected.Count / (double)columns);
+        var positionedUnits = selected
+            .Select(unit => (Unit: unit, Position: ReadUnitCell(unit.Pointer)))
+            .OrderBy(item => item.Position.Y)
+            .ThenBy(item => item.Position.X)
+            .ToArray();
+
+        var centerX = (int)Math.Round(positionedUnits.Average(item => item.Position.X));
+        var centerY = (int)Math.Round(positionedUnits.Average(item => item.Position.Y));
+        var bounds = ReadBytes(Map + MapBoundsOffset, 16);
+        var left = BitConverter.ToInt32(bounds, 0);
+        var top = BitConverter.ToInt32(bounds, 4);
+        var right = BitConverter.ToInt32(bounds, 8);
+        var bottom = BitConverter.ToInt32(bounds, 12);
+        var formationHeight = (rows - 1) * spacing;
+        var firstRowY = Math.Clamp(centerY - formationHeight / 2, top, bottom - formationHeight);
+        var destinations = new List<(short X, short Y)>(selected.Count);
+
+        for (var row = 0; row < rows; row++)
+        {
+            var countInRow = Math.Min(columns, selected.Count - row * columns);
+            var rowWidth = (countInRow - 1) * spacing;
+            var firstColumnX = Math.Clamp(centerX - rowWidth / 2, left, right - rowWidth);
+            for (var column = 0; column < countInRow; column++)
+                destinations.Add((checked((short)(firstColumnX + column * spacing)),
+                    checked((short)(firstRowY + row * spacing))));
+        }
+
+        var facingDelta = (X: 0, Y: 0);
+        foreach (var candidate in new[] { (X: 0, Y: -1), (X: 1, Y: 0), (X: 0, Y: 1), (X: -1, Y: 0) })
+        {
+            if (!destinations.All(destination =>
+                    destination.X - candidate.X >= left && destination.X - candidate.X <= right &&
+                    destination.Y - candidate.Y >= top && destination.Y - candidate.Y <= bottom))
+                continue;
+            facingDelta = candidate;
+            break;
+        }
+        if (facingDelta == (0, 0))
+            return 0;
+
+        formationMissions.Clear();
+        foreach (var (item, destination) in positionedUnits.Zip(destinations))
+        {
+            pendingMissions.Remove(item.Unit.Id);
+            var approach = (X: checked((short)(destination.X - facingDelta.X)),
+                Y: checked((short)(destination.Y - facingDelta.Y)));
+            formationMissions.Enqueue(new QueuedMission(item.Unit, 2, approach));
+            formationMissions.Enqueue(new QueuedMission(item.Unit, 3, destination));
+        }
+        return selected.Count;
+    }
+
+    private void ToggleInstantBuild()
+    {
+        if (instantBuildEnabled)
+        {
+            DisableInstantBuild();
+            return;
+        }
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+        {
+            Console.WriteLine("[瞬间建造未开启] 当前玩家阵营无效。");
+            return;
+        }
+        instantBuildHouse = house;
+        originalBuildSpeeds = Enumerable.Range(0, 5)
+            .Select(index => ReadInt32(house + HouseBuildSpeedOffset + index * 4L)).ToArray();
+        instantBuildEnabled = true;
+        nextInstantBuildRefreshAt = DateTime.MinValue;
+        MaintainInstantBuild();
+        Console.WriteLine("[瞬间建造已开启] 生产倍率已锁定，并会立即推进当前生产项目。");
+    }
+
+    private void MaintainInstantBuild()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextInstantBuildRefreshAt)
+            return;
+        nextInstantBuildRefreshAt = now + TimeSpan.FromMilliseconds(100);
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+            return;
+        if (house != instantBuildHouse)
+        {
+            RestoreBuildSpeeds();
+            instantBuildHouse = house;
+            originalBuildSpeeds = Enumerable.Range(0, 5)
+                .Select(index => ReadInt32(house + HouseBuildSpeedOffset + index * 4L)).ToArray();
+        }
+        for (var index = 0; index < 5; index++)
+            WriteInt32(house + HouseBuildSpeedOffset + index * 4L, 15);
+
+        foreach (var factory in ReadVector(FactoryArray, 256))
+        {
+            if (ReadUInt32(factory + FactoryOwnerOffset) != house ||
+                ReadUInt32(factory + FactoryObjectOffset) == 0)
+                continue;
+            if (ReadInt32(factory + FactoryProductionValueOffset) >= 54)
+                continue;
+            WriteInt32(factory + FactoryProductionValueOffset, 53);
+            WriteBytes(factory + FactoryProductionChangedOffset, [0]);
+            WriteInt32(factory + FactoryProductionTimerStartOffset, ReadInt32(CurrentFrame) - 1);
+            WriteInt32(factory + FactoryProductionTimerTimeLeftOffset, 0);
+            WriteInt32(factory + FactoryProductionRateOffset, 1);
+            WriteInt32(factory + FactoryProductionStepOffset, 1);
+        }
+    }
+
+    private void DisableInstantBuild()
+    {
+        if (!instantBuildEnabled)
+            return;
+        RestoreBuildSpeeds();
+        instantBuildEnabled = false;
+        instantBuildHouse = 0;
+        originalBuildSpeeds = null;
+        Console.WriteLine("[瞬间建造已关闭] 已恢复原生产倍率。");
+    }
+
+    private void RestoreBuildSpeeds()
+    {
+        if (instantBuildHouse == 0 || originalBuildSpeeds is null)
+            return;
+        for (var index = 0; index < originalBuildSpeeds.Length; index++)
+            WriteInt32(instantBuildHouse + HouseBuildSpeedOffset + index * 4L, originalBuildSpeeds[index]);
+    }
+
+    private void ToggleBuildAnywhere()
+    {
+        if (buildAnywhereEnabled)
+        {
+            DisableBuildAnywhere();
+            return;
+        }
+
+        var expected = Convert.FromHexString("A14C3DA800");
+        var actual = ReadBytes(PassesProximityCheck, expected.Length);
+        if (!actual.AsSpan().SequenceEqual(expected))
+        {
+            Console.WriteLine("[随地建造未开启] 邻近范围函数指纹不匹配，未修改游戏代码。");
+            return;
+        }
+        originalProximityCheck = actual;
+        WriteCode(PassesProximityCheck, Convert.FromHexString("B001C21000"));
+        buildAnywhereEnabled = true;
+        Console.WriteLine("[随地建造已开启] 已取消基地邻近范围限制，地形与占用规则仍保留。");
+    }
+
+    private void DisableBuildAnywhere()
+    {
+        if (!buildAnywhereEnabled)
+            return;
+        if (originalProximityCheck is not null)
+            WriteCode(PassesProximityCheck, originalProximityCheck);
+        buildAnywhereEnabled = false;
+        originalProximityCheck = null;
+        Console.WriteLine("[随地建造已关闭] 已恢复游戏原始范围检查。");
+    }
+
+    private void ToggleAutoRepair()
+    {
+        autoRepairEnabled = !autoRepairEnabled;
+        nextAutoRepairAt = DateTime.MinValue;
+        Console.WriteLine(autoRepairEnabled
+            ? "[自动修理已开启] 将自动为受损且未维修的己方建筑下达维修命令。"
+            : "[自动修理已关闭]");
+    }
+
+    private void MaintainAutoRepair()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextAutoRepairAt)
+            return;
+        nextAutoRepairAt = now + TimeSpan.FromSeconds(1);
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+            return;
+        var queued = 0;
+        foreach (var building in ReadVector(house + HouseBuildingsOffset, 4096))
+        {
+            var buildingType = ReadUInt32(building + BuildingTypeOffset);
+            if (buildingType == 0)
+                continue;
+            var health = ReadInt32(building + ObjectHealthOffset);
+            var strength = ReadInt32(buildingType + ObjectTypeStrengthOffset);
+            if (ReadByte(building + ObjectIsAliveOffset) == 0 ||
+                ReadByte(building + ObjectInLimboOffset) != 0 ||
+                health <= 0 || strength <= 0 || health >= strength ||
+                ReadByte(building + BuildingIsBeingRepairedOffset) != 0)
+                continue;
+            QueueRepair(building);
+            if (++queued >= 4)
+                break;
+        }
+    }
+
+    private void QueueRepair(uint building)
+    {
+        var eventData = CreateEvent(0x15); // EventType::Repair
+        BitConverter.GetBytes(ReadInt32(building + 0x10)).CopyTo(eventData, 7);
+        eventData[11] = 52; // AbstractType::Abstract
+        EnqueueEvent(eventData);
+    }
+
+    private void ToggleSuperWeaponNoCooldown()
+    {
+        superWeaponNoCooldownEnabled = !superWeaponNoCooldownEnabled;
+        nextSuperWeaponRefreshAt = DateTime.MinValue;
+        Console.WriteLine(superWeaponNoCooldownEnabled
+            ? "[超级武器无冷却已开启] 已拥有的超级武器会持续进入就绪状态。"
+            : "[超级武器无冷却已关闭] 后续冷却由游戏正常管理。");
+    }
+
+    private void MaintainSuperWeaponNoCooldown()
+    {
+        var now = DateTime.UtcNow;
+        if (now < nextSuperWeaponRefreshAt)
+            return;
+        nextSuperWeaponRefreshAt = now + TimeSpan.FromMilliseconds(100);
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+            return;
+        foreach (var super in ReadVector(house + HouseSupersOffset, 256))
+        {
+            if (ReadByte(super + SuperIsPresentOffset) == 0 ||
+                ReadByte(super + SuperIsSuspendedOffset) != 0)
+                continue;
+            WriteInt32(super + SuperRechargeStartOffset, ReadInt32(CurrentFrame) - 1);
+            WriteInt32(super + SuperRechargeTimeLeftOffset, 0);
+        }
+    }
+
+    private void StopTimer(long timerAddress)
+    {
+        WriteInt32(timerAddress, -1);
+        WriteInt32(timerAddress + 8, 0);
+    }
+
+    private IEnumerable<uint> ReadVector(long vectorAddress, int maximumCount)
+    {
+        var items = ReadUInt32(vectorAddress + 4);
+        var count = ReadInt32(vectorAddress + 16);
+        if (items == 0 || count is < 0 || count > maximumCount)
+            yield break;
+        for (var index = 0; index < count; index++)
+        {
+            var pointer = ReadUInt32(items + index * 4L);
+            if (pointer != 0)
+                yield return pointer;
+        }
     }
 
     private (short X, short Y)? ReadSafeCell()
@@ -1724,35 +2116,6 @@ internal sealed class CratePicker : IDisposable
 
     private void QueueGuard(CapturedUnit captured) => QueueMission(captured, 5, null);
 
-    private void QueueProduction(AutoBuildTarget target)
-    {
-        var eventData = CreateEvent(0x0E); // EventType::Produce
-        BitConverter.GetBytes(7).CopyTo(eventData, 7); // AbstractType::BuildingType
-        BitConverter.GetBytes(target.HeapIndex).CopyTo(eventData, 11);
-        BitConverter.GetBytes(0).CopyTo(eventData, 15); // IsNaval
-        EnqueueEvent(eventData);
-    }
-
-    private void QueuePlacement(AutoBuildTarget target, (short X, short Y) cell)
-    {
-        var eventData = CreateEvent(0x0B); // EventType::Place
-        BitConverter.GetBytes(7).CopyTo(eventData, 7); // AbstractType::BuildingType
-        BitConverter.GetBytes(target.HeapIndex).CopyTo(eventData, 11);
-        BitConverter.GetBytes(0).CopyTo(eventData, 15); // IsNaval
-        BitConverter.GetBytes(cell.X).CopyTo(eventData, 19);
-        BitConverter.GetBytes(cell.Y).CopyTo(eventData, 21);
-        EnqueueEvent(eventData);
-    }
-
-    private void QueueAbandon(AutoBuildTarget target)
-    {
-        var eventData = CreateEvent(0x10); // EventType::Abandon
-        BitConverter.GetBytes(7).CopyTo(eventData, 7); // AbstractType::BuildingType
-        BitConverter.GetBytes(target.HeapIndex).CopyTo(eventData, 11);
-        BitConverter.GetBytes(0).CopyTo(eventData, 15); // IsNaval
-        EnqueueEvent(eventData);
-    }
-
     private byte[] CreateEvent(byte eventType)
     {
         var eventData = new byte[EventSize];
@@ -1765,17 +2128,74 @@ internal sealed class CratePicker : IDisposable
 
     private void QueueMission(CapturedUnit captured, byte mission, (short X, short Y)? destination)
     {
+        var queued = new QueuedMission(captured, mission, destination);
+        if (IsMultiplayerSession())
+        {
+            EnqueueEvent(CreateMissionEvent(queued));
+            return;
+        }
+        pendingMissions[captured.Id] = queued;
+    }
+
+    private byte[] CreateMissionEvent(QueuedMission queued)
+    {
         var eventData = CreateEvent(0x04); // EventType::MegaMission
-        BitConverter.GetBytes(captured.Id).CopyTo(eventData, 7);
+        BitConverter.GetBytes(queued.Unit.Id).CopyTo(eventData, 7);
         eventData[11] = 52; // AbstractType::Abstract
-        eventData[12] = mission;
-        if (destination is { } cell)
+        eventData[12] = queued.Mission;
+        if (queued.Destination is { } cell)
         {
             BitConverter.GetBytes(cell.X + 1000 * cell.Y).CopyTo(eventData, 19);
             eventData[23] = 11; // AbstractType::Cell
         }
+        return eventData;
+    }
 
-        EnqueueEvent(eventData);
+    private void FlushQueuedMissions(DateTime now)
+    {
+        if (pendingMissions.Count == 0 && formationMissions.Count == 0 || now < nextMissionFlushAt)
+            return;
+        nextMissionFlushAt = now + TimeSpan.FromMilliseconds(50);
+
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+            var count = ReadInt32(OutList);
+            var tail = ReadInt32(OutList + 8);
+            if (count is < 0 or > QueueCapacity || tail is < 0 or >= QueueCapacity)
+                throw new InvalidOperationException("游戏事件队列状态异常，已停止写入。");
+
+            var batchLimit = Math.Min(MissionEventsPerBatch, QueueCapacity - count);
+            var batch = new List<QueuedMission>(batchLimit);
+            while (formationMissions.Count != 0 && batch.Count < batchLimit)
+                batch.Add(formationMissions.Dequeue());
+            var formationBatchCount = batch.Count;
+            if (batch.Count < batchLimit)
+                batch.AddRange(pendingMissions.Values.Take(batchLimit - batch.Count));
+            if (batch.Count == 0)
+                return;
+
+            var timestamp = Environment.TickCount;
+            foreach (var queued in batch)
+            {
+                var eventData = CreateMissionEvent(queued);
+                WriteBytes(OutList + 12 + tail * EventSize, eventData);
+                WriteInt32(OutList + 12 + QueueCapacity * EventSize + tail * 4L, timestamp);
+                tail = (tail + 1) & (QueueCapacity - 1);
+                count++;
+            }
+            WriteInt32(OutList + 8, tail);
+            WriteInt32(OutList, count);
+            for (var index = formationBatchCount; index < batch.Count; index++)
+                pendingMissions.Remove(batch[index].Unit.Id);
+        }
+        finally
+        {
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
     }
 
     private void EnqueueEvent(byte[] eventData)
@@ -1818,8 +2238,6 @@ internal sealed class CratePicker : IDisposable
         var count = ReadInt32(CurrentObjects + 16);
         var houseCount = ReadInt32(HouseArray + 16);
         var queueCount = ReadInt32(OutList);
-        var buildingTypeCount = ReadInt32(BuildingTypeArray + 16);
-        var factoryCount = ReadInt32(FactoryArray + 16);
         var technoCount = ReadInt32(TechnoArray + 16);
         var currentHouse = ReadUInt32(CurrentPlayer);
         var failures = new List<string>();
@@ -1829,10 +2247,6 @@ internal sealed class CratePicker : IDisposable
             failures.Add($"HouseClass数量={houseCount}");
         if (queueCount is < 0 or > QueueCapacity)
             failures.Add($"事件队列数量={queueCount}");
-        if (buildingTypeCount is < 1 or > 2000)
-            failures.Add($"BuildingTypeClass数量={buildingTypeCount}");
-        if (factoryCount is < 0 or > 1000)
-            failures.Add($"FactoryClass数量={factoryCount}");
         if (technoCount is < 0 or > 10000)
             failures.Add($"TechnoClass数量={technoCount}");
         if (currentHouse == 0)
@@ -1854,22 +2268,52 @@ internal sealed class CratePicker : IDisposable
     private short ReadInt16(long address) => BitConverter.ToInt16(ReadBytes(address, 2));
     private int ReadInt32(long address) => BitConverter.ToInt32(ReadBytes(address, 4));
     private uint ReadUInt32(long address) => BitConverter.ToUInt32(ReadBytes(address, 4));
+    private float ReadSingle(long address) => BitConverter.ToSingle(ReadBytes(address, 4));
     private double ReadDouble(long address) => BitConverter.ToDouble(ReadBytes(address, 8));
 
     private byte[] ReadBytes(long address, int length)
     {
         var data = new byte[length];
         if (!Native.ReadProcessMemory(handle, (nint)address, data, length, out var read) || read != length)
-            throw new Win32Exception(Marshal.GetLastWin32Error(), $"读取地址 0x{address:X} 失败");
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (IsGameProcessUnavailable())
+                throw new GameProcessExitedException();
+            throw new Win32Exception(error, $"读取地址 0x{address:X} 失败");
+        }
         return data;
     }
 
     private void WriteInt32(long address, int value) => WriteBytes(address, BitConverter.GetBytes(value));
+    private void WriteSingle(long address, float value) => WriteBytes(address, BitConverter.GetBytes(value));
+
+    private void WriteCode(long address, byte[] data)
+    {
+        if (!Native.VirtualProtectEx(handle, (nint)address, (nuint)data.Length,
+                Native.PageExecuteReadWrite, out var previousProtection))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), $"无法修改地址 0x{address:X} 的页面保护");
+        try
+        {
+            WriteBytes(address, data);
+            if (!Native.FlushInstructionCache(handle, (nint)address, (nuint)data.Length))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "刷新游戏指令缓存失败");
+        }
+        finally
+        {
+            Native.VirtualProtectEx(handle, (nint)address, (nuint)data.Length,
+                previousProtection, out _);
+        }
+    }
 
     private void WriteBytes(long address, byte[] data)
     {
         if (!Native.WriteProcessMemory(handle, (nint)address, data, data.Length, out var written) || written != data.Length)
-            throw new Win32Exception(Marshal.GetLastWin32Error(), $"写入地址 0x{address:X} 失败");
+        {
+            var error = Marshal.GetLastWin32Error();
+            if (IsGameProcessUnavailable())
+                throw new GameProcessExitedException();
+            throw new Win32Exception(error, $"写入地址 0x{address:X} 失败");
+        }
     }
 
     private static void CheckNtStatus(int status, string message)
@@ -1883,12 +2327,15 @@ internal sealed class CratePicker : IDisposable
         StopOverlay();
         try
         {
-            if (!process.HasExited)
+            if (!IsGameProcessUnavailable())
             {
+                DisableCrateActionLines();
+                DisableRevealMap();
                 DisableInfiniteMoney();
                 DisableOneHitKill();
-                CancelPlanningPreview();
-                ClearPlanMarkers(EnumerateBuildPlans().ToArray());
+                DisableMaximumPower();
+                DisableInstantBuild();
+                DisableBuildAnywhere();
             }
         }
         catch
@@ -1919,69 +2366,35 @@ internal sealed class CratePicker : IDisposable
     }
 
     private sealed record CapturedUnit(uint Pointer, int Id);
+
+    private readonly record struct QueuedMission(
+        CapturedUnit Unit,
+        byte Mission,
+        (short X, short Y)? Destination);
     private sealed record OneHitKillObjectState(
         int Id,
         double OriginalFirepowerMultiplier,
         double OriginalArmorMultiplier);
+    private sealed record RevealMapCellState(
+        byte[] Visibility,
+        byte[] RevealFlags);
     private sealed record CrateSlot(int Index, short X, short Y);
     private readonly record struct CrateKey(int Index, short X, short Y);
-    private readonly record struct FactoryState(
-        bool HasRequestedProduct,
-        bool HasSameCategoryProduct,
-        bool IsReady);
-
-    private sealed record FoundationLayout(
-        byte[] Data,
-        short TopLeftX,
-        short TopLeftY);
-
-    private enum BuildPlanStage
-    {
-        WaitingToProduce,
-        WaitingForProduct,
-        WaitingForPlacementResult,
-        WaitingForAbandon
-    }
-
-    private sealed class BuildPlan(
-        int number,
-        AutoBuildTarget target,
-        (short X, short Y) cell,
-        IReadOnlyList<(short X, short Y)> markerCells)
-    {
-        public int Number { get; } = number;
-        public AutoBuildTarget Target { get; } = target;
-        public (short X, short Y) Cell { get; } = cell;
-        public IReadOnlyList<(short X, short Y)> MarkerCells { get; } = markerCells;
-        public bool MarkerVisible { get; set; } = true;
-        public BuildPlanStage Stage { get; set; } = BuildPlanStage.WaitingToProduce;
-        public DateTime StageStartedAt { get; set; } = DateTime.MinValue;
-        public int ProductionAttempts { get; set; }
-        public int AbandonAttempts { get; set; }
-    }
-
-    private sealed class AutoBuildTarget(
-        string id,
-        string name,
-        int heapIndex,
-        uint typePointer,
-        int buildCategory)
-    {
-        public string Id { get; } = id;
-        public string Name { get; } = name;
-        public int HeapIndex { get; } = heapIndex;
-        public uint TypePointer { get; } = typePointer;
-        public int BuildCategory { get; } = buildCategory;
-        public DateTime UnavailableUntil { get; set; } = DateTime.MinValue;
-    }
 }
+
+internal sealed class GameProcessExitedException : Exception;
 
 internal static class Native
 {
     internal const uint ProcessVmRead = 0x0010;
     internal const uint ProcessVmWrite = 0x0020;
+    internal const uint ProcessVmOperation = 0x0008;
     internal const uint ProcessQueryInformation = 0x0400;
     internal const uint ProcessSuspendResume = 0x0800;
+    internal const uint PageExecuteReadWrite = 0x40;
+    internal const uint MemCommit = 0x1000;
+    internal const uint MemReserve = 0x2000;
+    internal const uint MemRelease = 0x8000;
 
     [DllImport("kernel32.dll", SetLastError = true)]
     internal static extern SafeProcessHandle OpenProcess(uint access, bool inherit, int processId);
@@ -1996,13 +2409,28 @@ internal static class Native
     internal static extern bool WriteProcessMemory(SafeProcessHandle process, nint address,
         byte[] buffer, int size, out int bytesWritten);
 
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool VirtualProtectEx(SafeProcessHandle process, nint address,
+        nuint size, uint newProtection, out uint oldProtection);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool FlushInstructionCache(SafeProcessHandle process, nint address, nuint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    internal static extern nint VirtualAllocEx(SafeProcessHandle process, nint address,
+        nuint size, uint allocationType, uint protection);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool VirtualFreeEx(SafeProcessHandle process, nint address,
+        nuint size, uint freeType);
+
     [DllImport("ntdll.dll")]
     internal static extern int NtSuspendProcess(SafeProcessHandle process);
 
     [DllImport("ntdll.dll")]
     internal static extern int NtResumeProcess(SafeProcessHandle process);
-
-    [DllImport("user32.dll")]
-    internal static extern short GetAsyncKeyState(int virtualKey);
 
 }

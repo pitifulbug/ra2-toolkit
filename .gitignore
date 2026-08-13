@@ -1,7 +1,50 @@
-bin/
-obj/
-publish*/
+# Visual Studio / 本地用户配置
+.vs/
+.vs
 *.user
 *.suo
-*.obj
-.vs/
+*.userosscache
+*.sln.docstates
+# .NET 编译与发布输出
+bin/
+obj/
+artifacts/
+publish/
+
+# 本地参考资料与发行包辅助文件
+.reference/
+release/
+
+# 已生成的二进制与压缩包
+*.exe
+*.dll
+*.pdb
+*.deps.json
+*.runtimeconfig.json
+*.zip
+*.7z
+*.rar
+
+# 日志、缓存与临时文件
+*.log
+*.tmp
+*.temp
+*.cache
+*.bak
+*.old
+*.orig
+*.pid
+*.dmp
+*.stackdump
+~$*
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# 编辑器配置
+.idea/
+.vscode/
+*.code-workspace
+
+# 程序图标属于核心资源，必须纳入版本控制
+!*.ico
