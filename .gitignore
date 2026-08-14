@@ -26,6 +26,7 @@ release/
 *.rar
 
 # 日志、缓存与临时文件
+.dotnet-cli/
 *.log
 *.tmp
 *.temp

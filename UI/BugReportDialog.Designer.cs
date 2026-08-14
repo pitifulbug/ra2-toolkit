@@ -33,7 +33,7 @@ partial class BugReportDialog
         reportTypeComboBox.Items.AddRange(new object[] { "错误", "意见" });
         reportTypeComboBox.Location = new Point(94, 18);
         reportTypeComboBox.Name = "reportTypeComboBox";
-        reportTypeComboBox.Size = new Size(328, 25);
+        reportTypeComboBox.Size = new Size(186, 25);
         reportTypeComboBox.TabIndex = 1;
         reportTypeComboBox.SelectedIndexChanged += ReportTypeComboBox_SelectedIndexChanged;
         // 
@@ -41,7 +41,7 @@ partial class BugReportDialog
         // 
         AutoScaleDimensions = new SizeF(7F, 17F);
         AutoScaleMode = AutoScaleMode.Font;
-        ClientSize = new Size(442, 64);
+        ClientSize = new Size(300, 64);
         Controls.Add(reportTypeComboBox);
         Controls.Add(reportTypeLabel);
         FormBorderStyle = FormBorderStyle.FixedDialog;
