@@ -86,6 +86,8 @@ internal sealed partial class CratePicker
             [OverlayCommand.ArrangeSelectedFormation] = () => formationModeEnabled ? ArrangeSelectedFormation() : -1,
             [OverlayCommand.ToggleInfiniteRangeMode] = Command(ToggleInfiniteRangeMode),
             [OverlayCommand.ToggleSelectedInfiniteRange] = () => ToggleSelectedInfiniteRange(),
+            [OverlayCommand.ToggleInfiniteSpeedMode] = Command(ToggleInfiniteSpeedMode),
+            [OverlayCommand.ToggleSelectedInfiniteSpeed] = () => ToggleSelectedInfiniteSpeed(),
             [OverlayCommand.ToggleSpinningMcvMode] = Command(ToggleSpinningMcvMode),
             [OverlayCommand.ToggleSelectedSpinningMcvs] = () => ToggleSelectedSpinningMcvs(),
             [OverlayCommand.ToggleInstantBuild] = Command(ToggleInstantBuild),
@@ -155,6 +157,7 @@ internal sealed partial class CratePicker
         OverlayCommand.ToggleEliteUnits => eliteUnitsEnabled,
         OverlayCommand.ToggleFormationMode => formationModeEnabled,
         OverlayCommand.ToggleInfiniteRangeMode => infiniteRangeModeEnabled,
+        OverlayCommand.ToggleInfiniteSpeedMode => infiniteSpeedModeEnabled,
         OverlayCommand.ToggleSpinningMcvMode => spinningMcvModeEnabled,
         OverlayCommand.ToggleCratePicker => enabled,
         OverlayCommand.ToggleCrateRouteLines => crateRouteLinesEnabled,
@@ -213,6 +216,14 @@ internal sealed partial class CratePicker
                 $"已恢复 {-affectedCount} 个选中单位的正常射程。",
             OverlayCommand.ToggleSelectedInfiniteRange =>
                 "未找到可操作的选中单位，请先在游戏中选择己方单位。",
+            OverlayCommand.ToggleSelectedInfiniteSpeed when affectedCount == int.MinValue =>
+                "请先在控制面板中启用无限移速。",
+            OverlayCommand.ToggleSelectedInfiniteSpeed when affectedCount > 0 =>
+                $"已为 {affectedCount} 个选中单位启用无限移速。",
+            OverlayCommand.ToggleSelectedInfiniteSpeed when affectedCount < 0 =>
+                $"已恢复 {-affectedCount} 个选中单位的正常移速。",
+            OverlayCommand.ToggleSelectedInfiniteSpeed =>
+                "未找到可操作的选中单位，请先在游戏中选择己方可移动单位。",
             OverlayCommand.EnableSelectedCratePickers when affectedCount > 0 =>
                 $"已为 {affectedCount} 个单位启用自动捡箱子。",
             OverlayCommand.DisableSelectedCratePickers when affectedCount > 0 =>
@@ -248,6 +259,7 @@ internal sealed partial class CratePicker
         OverlayCommand.ToggleEliteUnits => "单位升到三级",
         OverlayCommand.ToggleFormationMode => "方阵排列",
         OverlayCommand.ToggleInfiniteRangeMode => "无限射程",
+        OverlayCommand.ToggleInfiniteSpeedMode => "无限移速",
         OverlayCommand.ToggleSpinningMcvMode => "基地车转圈",
         OverlayCommand.ToggleCratePicker => "自动捡箱子",
         OverlayCommand.ToggleCrateRouteLines => "显示捡箱路线",
@@ -286,6 +298,7 @@ internal sealed partial class CratePicker
             eliteUnitsEnabled,
             formationModeEnabled,
             infiniteRangeModeEnabled,
+            infiniteSpeedModeEnabled,
             spinningMcvModeEnabled,
             enabled,
             crateRouteLinesEnabled,
@@ -315,6 +328,8 @@ internal sealed partial class CratePicker
         OverlayCommand.ToggleEliteUnits or
         OverlayCommand.ToggleInfiniteRangeMode or
         OverlayCommand.ToggleSelectedInfiniteRange or
+        OverlayCommand.ToggleInfiniteSpeedMode or
+        OverlayCommand.ToggleSelectedInfiniteSpeed or
         OverlayCommand.ToggleSpinningMcvMode or
         OverlayCommand.ToggleSelectedSpinningMcvs or
         OverlayCommand.ToggleInstantBuild or
@@ -339,6 +354,7 @@ internal sealed partial class CratePicker
             highDefenseEnabled ||
             eliteUnitsEnabled ||
             infiniteRangeModeEnabled ||
+            infiniteSpeedModeEnabled ||
             spinningMcvModeEnabled ||
             maximumPowerEnabled ||
             fullTechEnabled ||
@@ -351,12 +367,13 @@ internal sealed partial class CratePicker
             autoBuildState is not null;
 
         StopAutoBuild(null);
-        DisableRevealMap();
+        DisableRevealMapBestEffort();
         DisableInfiniteMoney();
         DisableOneHitKill();
         DisableHighDefense();
         DisableEliteUnits();
         DisableInfiniteRangeMode();
+        DisableInfiniteSpeedMode();
         DisableSpinningMcvMode();
         DisableMaximumPower();
         DisableFullTech();
@@ -387,12 +404,13 @@ internal sealed partial class CratePicker
         if (exitRequested)
             return;
         StopAutoBuild(null);
-        DisableRevealMap();
+        DisableRevealMapBestEffort();
         DisableInfiniteMoney();
         DisableOneHitKill();
         DisableHighDefense();
         DisableEliteUnits();
         DisableInfiniteRangeMode();
+        DisableInfiniteSpeedMode();
         DisableSpinningMcvMode();
         DisableMaximumPower();
         DisableFullTech();

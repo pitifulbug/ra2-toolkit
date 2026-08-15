@@ -8,6 +8,9 @@ using Microsoft.Win32.SafeHandles;
 
 internal sealed partial class CratePicker
 {
+    internal static int GetUnlimitedBuildLimit(int originalBuildLimit) =>
+        originalBuildLimit > 0 ? int.MaxValue : originalBuildLimit;
+
     private void ToggleMaximumPower()
     {
         if (maximumPowerEnabled)
@@ -44,7 +47,7 @@ internal sealed partial class CratePicker
         var drain = Math.Max(0, ReadInt32(house + HousePowerDrainOffset));
         StopTimer(house + HousePowerBlackoutTimerOffset);
         WriteInt32(house + HousePowerOutputOffset, Math.Max(LockedPowerOutput, drain + 100_000));
-        WriteBytes(house + HouseRecheckPowerOffset, [0]);
+        WriteBytes(house + HouseRecheckPowerOffset, [MaximumPowerRecheckFlag]);
     }
 
     private void DisableMaximumPower()
@@ -155,6 +158,11 @@ internal sealed partial class CratePicker
         catch
         {
             unlimitedProductionEnabled = previous;
+            if (!previous && unlimitedProductionBuildLimits.Count != 0)
+            {
+                try { RestoreUnlimitedProductionBuildLimits(); }
+                catch (Win32Exception) { }
+            }
             throw;
         }
     }
@@ -224,12 +232,46 @@ internal sealed partial class CratePicker
                 // Leave this tiny allocation alive and use a fresh cave next time.
                 fullTechCodeCave = 0;
             }
+            if (unlimitedProductionEnabled)
+                ApplyUnlimitedProductionBuildLimits();
+            else
+                RestoreUnlimitedProductionBuildLimits();
             MarkTechTreeForRefresh();
         }
         finally
         {
             if (suspended)
                 CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+    }
+
+    private void ApplyUnlimitedProductionBuildLimits()
+    {
+        var items = ReadUInt32(BuildingTypeArray + 4);
+        var count = ReadInt32(BuildingTypeArray + 16);
+        if (items == 0 || count is < 0 or > 4096)
+            throw new InvalidOperationException($"BuildingTypeClass 列表异常：{count}。");
+
+        for (var index = 0; index < count; index++)
+        {
+            var type = ReadUInt32(items + index * 4L);
+            if (type == 0 || unlimitedProductionBuildLimits.ContainsKey(type))
+                continue;
+            var originalBuildLimit = ReadInt32(type + TechnoTypeBuildLimitOffset);
+            var unlimitedBuildLimit = GetUnlimitedBuildLimit(originalBuildLimit);
+            if (unlimitedBuildLimit == originalBuildLimit)
+                continue;
+            unlimitedProductionBuildLimits.Add(type, originalBuildLimit);
+            WriteInt32(type + TechnoTypeBuildLimitOffset, unlimitedBuildLimit);
+        }
+    }
+
+    private void RestoreUnlimitedProductionBuildLimits()
+    {
+        foreach (var entry in unlimitedProductionBuildLimits.ToArray())
+        {
+            WriteInt32(entry.Key + TechnoTypeBuildLimitOffset, entry.Value);
+            unlimitedProductionBuildLimits.Remove(entry.Key);
         }
     }
 

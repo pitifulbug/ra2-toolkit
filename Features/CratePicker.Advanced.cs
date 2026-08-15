@@ -88,7 +88,6 @@ internal sealed partial class CratePicker
     {
         if (!invadeModeEnabled)
             return;
-        VerifyOriginalCode(InvadeMode, InvadeModeOriginalBytes, "侵略模式");
         WriteCode(InvadeMode, InvadeModeOriginalBytes);
         invadeModeEnabled = false;
     }

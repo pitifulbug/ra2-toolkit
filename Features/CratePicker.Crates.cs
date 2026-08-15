@@ -369,26 +369,10 @@ internal sealed partial class CratePicker
         {
             state.WaitingForCrate = true;
             state.ActiveCrate = null;
-            state.SafeCell = ReadSafeCell();
-            state.LastSafeObservedCell = currentCell;
-            state.LastSafeProgressAt = now;
-
-            if (state.SafeCell is { } target && DistanceSquared(currentCell, target) > 4)
-            {
-                QueueMove(state.Unit, target.X, target.Y);
-            }
-            else
-            {
-                QueueGuard(state.Unit);
-                state.SafeCell = null;
-            }
-            state.LastCommandAt = now;
+            state.SafeCellAttempt = 0;
+            QueueBaseReturn(state, now, currentCell);
             return;
         }
-
-        if (state.SafeCell is not { } destination ||
-            now - state.LastCommandAt < TimeSpan.FromSeconds(5))
-            return;
 
         if (currentCell != state.LastSafeObservedCell)
         {
@@ -396,23 +380,81 @@ internal sealed partial class CratePicker
             state.LastSafeProgressAt = now;
         }
 
-        if (DistanceSquared(currentCell, destination) <= 4)
+        if (state.AtSafePlace)
+        {
+            if (now - state.LastCommandAt < TimeSpan.FromSeconds(5))
+                return;
+            var refreshedTarget = ReadSafeCell(state.Unit, state.SafeCellAttempt);
+            if (refreshedTarget != state.SafeCell)
+            {
+                state.AtSafePlace = false;
+                QueueBaseReturn(state, now, currentCell);
+                return;
+            }
+            if (state.SafeCell is { } parkedAt &&
+                DistanceSquared(currentCell, parkedAt) <= 1)
+            {
+                state.LastCommandAt = now;
+                return;
+            }
+            state.AtSafePlace = false;
+            QueueBaseReturn(state, now, currentCell);
+            return;
+        }
+
+        if (now - state.LastCommandAt < TimeSpan.FromSeconds(5))
+            return;
+
+        if (state.SafeCell is not { } destination)
+        {
+            state.SafeCellAttempt++;
+            QueueBaseReturn(state, now, currentCell);
+            return;
+        }
+
+        if (DistanceSquared(currentCell, destination) <= 1)
         {
             QueueGuard(state.Unit);
-            state.SafeCell = null;
+            state.AtSafePlace = true;
             state.LastCommandAt = now;
             return;
         }
 
         if (now - state.LastSafeProgressAt >= TimeSpan.FromSeconds(10))
         {
-            QueueGuard(state.Unit);
-            state.SafeCell = null;
-            state.LastCommandAt = now;
+            state.SafeCellAttempt++;
+            QueueBaseReturn(state, now, currentCell);
             return;
         }
 
         QueueMove(state.Unit, destination.X, destination.Y);
+        state.LastCommandAt = now;
+    }
+
+    private void QueueBaseReturn(
+        UnitState state, DateTime now, (int X, int Y) currentCell)
+    {
+        state.SafeCell = ReadSafeCell(state.Unit, state.SafeCellAttempt);
+        state.AtSafePlace = false;
+        state.LastSafeObservedCell = currentCell;
+        state.LastSafeProgressAt = now;
+
+        if (state.SafeCell is { } target)
+        {
+            if (DistanceSquared(currentCell, target) > 1)
+            {
+                QueueMove(state.Unit, target.X, target.Y);
+            }
+            else
+            {
+                QueueGuard(state.Unit);
+                state.AtSafePlace = true;
+            }
+        }
+        else
+        {
+            QueueGuard(state.Unit);
+        }
         state.LastCommandAt = now;
     }
 

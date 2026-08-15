@@ -12,8 +12,7 @@ internal sealed partial class CratePicker
     {
         if (revealMapEnabled)
         {
-            revealMapEnabled = false;
-            Console.WriteLine("[地图全开已关闭] 已停止该功能；原生视野箱已经揭开的地图会保留。");
+            DisableRevealMap();
             return;
         }
 
@@ -33,7 +32,6 @@ internal sealed partial class CratePicker
             Console.WriteLine($"[地图全开未开启] {error.Message}");
             return;
         }
-
         revealMapEnabled = true;
         Console.WriteLine("[地图全开已开启] 已调用游戏原生的全图视野箱效果。");
     }
@@ -129,12 +127,117 @@ internal sealed partial class CratePicker
         }
     }
 
+    private void InvokeHouseReshroudMap(uint house)
+    {
+        if (ReadUInt32(CurrentPlayer) != house)
+            throw new InvalidOperationException("当前玩家阵营已经变化，已停止恢复地图迷雾。");
+        if (!ReadBytes(LogicUpdate, LogicUpdateOriginalBytes.Length)
+                .AsSpan().SequenceEqual(LogicUpdateOriginalBytes))
+            throw new InvalidOperationException("游戏主循环函数指纹不匹配，未执行。");
+
+        const int codeCaveSize = 96;
+        var codeCave = Native.VirtualAllocEx(handle, 0, codeCaveSize,
+            Native.MemCommit | Native.MemReserve, Native.PageExecuteReadWrite);
+        if (codeCave == 0)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "分配原生恢复迷雾调用区失败");
+
+        var markerAddress = codeCave.ToInt64() + 80;
+        var protectionChanged = false;
+        uint previousProtection = 0;
+        var canFreeCodeCave = true;
+        try
+        {
+            var code = new List<byte>(80) { 0x60 }; // pushad
+            code.AddRange([0xC7, 0x05]);
+            code.AddRange(BitConverter.GetBytes(checked((uint)LogicUpdate)));
+            code.AddRange(LogicUpdateOriginalBytes.AsSpan(0, 4).ToArray());
+            code.AddRange([0xC7, 0x05]);
+            code.AddRange(BitConverter.GetBytes(checked((uint)(LogicUpdate + 4))));
+            code.AddRange(LogicUpdateOriginalBytes.AsSpan(4, 4).ToArray());
+            code.AddRange([0xC6, 0x05]);
+            code.AddRange(BitConverter.GetBytes(checked((uint)(LogicUpdate + 8))));
+            code.Add(LogicUpdateOriginalBytes[8]);
+            code.Add(0xB9); // mov ecx, HouseClass*
+            code.AddRange(BitConverter.GetBytes(checked((uint)house)));
+            code.Add(0xB8); // mov eax, HouseClass::ReshroudMap
+            code.AddRange(BitConverter.GetBytes(checked((uint)HouseReshroudMap)));
+            code.AddRange([0xFF, 0xD0]); // call eax
+            code.AddRange([0xC7, 0x05]); // completion marker
+            code.AddRange(BitConverter.GetBytes(checked((uint)markerAddress)));
+            code.AddRange(BitConverter.GetBytes(1));
+            code.Add(0x61); // popad
+            code.AddRange(LogicUpdateOriginalBytes);
+            code.Add(0xE9);
+            code.AddRange(BitConverter.GetBytes(checked((int)
+                (LogicUpdate + LogicUpdateOriginalBytes.Length -
+                 (codeCave.ToInt64() + code.Count + 4)))));
+            WriteBytes(codeCave.ToInt64(), [.. code]);
+            if (!Native.VirtualProtectEx(handle, (nint)LogicUpdate,
+                    (nuint)LogicUpdateOriginalBytes.Length,
+                    Native.PageExecuteReadWrite, out previousProtection))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "修改主循环入口页面保护失败");
+            protectionChanged = true;
+
+            var jump = Enumerable.Repeat((byte)0x90, LogicUpdateOriginalBytes.Length).ToArray();
+            jump[0] = 0xE9;
+            BitConverter.GetBytes(checked((int)
+                    (codeCave.ToInt64() - (LogicUpdate + 5))))
+                .CopyTo(jump, 1);
+            WriteBytes(LogicUpdate, jump);
+            if (!Native.FlushInstructionCache(handle, (nint)LogicUpdate, (nuint)jump.Length))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "刷新主循环入口跳转失败");
+
+            var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(3);
+            while (DateTime.UtcNow < deadline && ReadInt32(markerAddress) != 1)
+                Thread.Sleep(10);
+            if (ReadInt32(markerAddress) != 1)
+            {
+                canFreeCodeCave = false;
+                throw new InvalidOperationException("等待游戏主线程执行恢复迷雾逻辑超时。");
+            }
+            Thread.Sleep(50);
+        }
+        finally
+        {
+            if (protectionChanged)
+            {
+                WriteBytes(LogicUpdate, LogicUpdateOriginalBytes);
+                Native.FlushInstructionCache(handle, (nint)LogicUpdate,
+                    (nuint)LogicUpdateOriginalBytes.Length);
+                Native.VirtualProtectEx(handle, (nint)LogicUpdate,
+                    (nuint)LogicUpdateOriginalBytes.Length,
+                    previousProtection, out _);
+            }
+            if (canFreeCodeCave)
+                Native.VirtualFreeEx(handle, codeCave, 0, Native.MemRelease);
+        }
+    }
+
     private void DisableRevealMap()
     {
         if (!revealMapEnabled)
             return;
+
+        var house = ReadUInt32(CurrentPlayer);
+        if (house == 0)
+            throw new InvalidOperationException("当前玩家阵营指针无效，无法恢复地图迷雾。");
+        InvokeHouseReshroudMap(house);
         revealMapEnabled = false;
-        Console.WriteLine("[地图全开已关闭] 原生视野箱已经揭开的地图会保留。");
+        Console.WriteLine("[地图全开已关闭] 已调用无卫星时的原生逻辑恢复战争迷雾。");
+    }
+
+    private void DisableRevealMapBestEffort()
+    {
+        try
+        {
+            DisableRevealMap();
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or
+                                      GameProcessExitedException)
+        {
+            revealMapEnabled = false;
+            Console.WriteLine($"[地图全开清理失败] {error.Message}");
+        }
     }
 
     private void ToggleInfiniteMoney()
@@ -448,7 +551,7 @@ internal sealed partial class CratePicker
         }
     }
 
-    private static bool IsReasonableFirepowerMultiplier(double value) =>
+    internal static bool IsReasonableFirepowerMultiplier(double value) =>
         double.IsFinite(value) && value is > 0.0 and <= 1000.0;
 
 }

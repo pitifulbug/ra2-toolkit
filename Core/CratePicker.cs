@@ -58,6 +58,7 @@ internal sealed partial class CratePicker : IDisposable
     private const long BuildingTypeArray = 0xA83C68;
     private const long FactoryArray = 0xA83E30;
     private const long Map = 0x87F7E8;
+    private const int MapBoundsOffset = 0x124;
     private const long HouseArray = 0xA80228;
     private const long CurrentPlayer = 0xA83D4C;
     private const long OutList = 0xA802C8;
@@ -67,6 +68,7 @@ internal sealed partial class CratePicker : IDisposable
     private const long ActionLineSelectionCheck = 0x6D4735;
     private const long LogicUpdate = 0x55AFB0;
     private const long RevealMapLikeCrate = 0x577D90;
+    private const long HouseReshroudMap = 0x50BD10;
     private const long HouseCanBuild = 0x4F7870;
     private const long BuildingTypeCanPlaceHere = 0x464AC0;
     private const long TechnoIsCloseEnough = 0x6F77B0;
@@ -102,7 +104,6 @@ internal sealed partial class CratePicker : IDisposable
     private const int InfiniteRangeCodeCaveSize = 2048;
     private const int InfiniteRangeCountOffset = 0x200;
     private const int InfiniteRangeTableOffset = 0x204;
-    private const int MapBoundsOffset = 0x124;
     private const int CratesOffset = 0x158;
     private const int ObjectIsOnMapOffset = 0x74;
     private const int ObjectInLimboOffset = 0x81;
@@ -111,6 +112,9 @@ internal sealed partial class CratePicker : IDisposable
     private const int ObjectTypeStrengthOffset = 0xA0;
     private const int TechnoArmorMultiplierOffset = 0x158;
     private const int TechnoFirepowerMultiplierOffset = 0x160;
+    private const int FootSpeedMultiplierOffset = 0x580;
+    private const long PowerupArguments = 0x89EC28;
+    private const int PowerupSpeedArgumentIndex = 10;
     private const int TechnoOwnerOffset = 0x21C;
     private const int TechnoReloadTimerTimeLeftOffset = 0x204;
     private const int TechnoChronoLockRemainingOffset = 0x284;
@@ -127,6 +131,19 @@ internal sealed partial class CratePicker : IDisposable
     private const int McvSpinFacingStep = 0x800;
     private static readonly HashSet<string> McvTypeIds =
         new(StringComparer.OrdinalIgnoreCase) { "AMCV", "MCV", "SMCV", "PCV" };
+    private static readonly HashSet<string> ConstructionYardTypeIds =
+        new(StringComparer.OrdinalIgnoreCase) { "GACNST", "NACNST", "YACNST" };
+    private static readonly (short X, short Y)[] BaseReturnOffsets =
+    [
+        (4, 0), (4, 2), (4, 4), (2, 4),
+        (0, 4), (-2, 4), (-4, 4), (-4, 2),
+        (-4, 0), (-4, -2), (-4, -4), (-2, -4),
+        (0, -4), (2, -4), (4, -4), (4, -2),
+        (6, 0), (6, 3), (6, 6), (3, 6),
+        (0, 6), (-3, 6), (-6, 6), (-6, 3),
+        (-6, 0), (-6, -3), (-6, -6), (-3, -6),
+        (0, -6), (3, -6), (6, -6), (6, -3)
+    ];
     private const int HouseBalanceOffset = 0x30C;
     private const int HouseBaseSpawnCellOffset = 0x5490;
     private const int HouseBaseCenterOffset = 0x5494;
@@ -139,6 +156,7 @@ internal sealed partial class CratePicker : IDisposable
     private const int HouseRecheckPowerOffset = 0x5778;
     private const int HouseRecheckTechTreeOffset = 0x1FC;
     private const int BuildingTypeOffset = 0x520;
+    private const int TechnoTypeBuildLimitOffset = 0x3B8;
     private const int BuildingIsBeingRepairedOffset = 0x6E8;
     private const int FactoryProductionValueOffset = 0x24;
     private const int FactoryProductionChangedOffset = 0x28;
@@ -161,6 +179,9 @@ internal sealed partial class CratePicker : IDisposable
     private const double ExtremeDefenseArmorMultiplier = 1000.0;
     private const int InfiniteMoneyFloor = 100_000;
     private const int LockedPowerOutput = 1_000_000;
+    internal const byte MaximumPowerRecheckFlag = 1;
+    internal const long RevealMapRoutineAddress = RevealMapLikeCrate;
+    internal const long ReshroudMapRoutineAddress = HouseReshroudMap;
     private const long UpdatePowerFinalComparison = 0x508D8D;
     private static readonly byte[] UpdatePowerOriginalBytes = Convert.FromHexString("8B8EA4530000");
 
@@ -195,6 +216,8 @@ internal sealed partial class CratePicker : IDisposable
     private long infiniteRangeCountAddress;
     private long infiniteRangeTableAddress;
     private DateTime nextInfiniteRangeValidationAt = DateTime.MinValue;
+    private bool infiniteSpeedModeEnabled;
+    private readonly Dictionary<CapturedUnit, double> infiniteSpeedUnits = [];
     private bool fastTurnEnabled;
     private bool disableGapGeneratorsEnabled;
     private readonly Dictionary<uint, (int Id, int OriginalLock)> gapGeneratorStates = [];
@@ -219,6 +242,7 @@ internal sealed partial class CratePicker : IDisposable
     private nint fullTechCodeCave;
     private bool canBuildPatchInstalled;
     private bool unlimitedProductionEnabled;
+    private readonly Dictionary<uint, int> unlimitedProductionBuildLimits = [];
     private bool chronoLegionnaireNoCooldownEnabled;
     private DateTime nextChronoLegionnaireRefreshAt = DateTime.MinValue;
     private bool instantBuildEnabled;
@@ -354,7 +378,7 @@ internal sealed partial class CratePicker : IDisposable
     public void Run()
     {
         StartOverlay();
-        Console.WriteLine("软件版本：1.0.2");
+        Console.WriteLine("软件版本：1.0.3");
         Console.WriteLine("使用方法：");
         Console.WriteLine("1. 在游戏中框选一个或多个己方可移动单位。");
         Console.WriteLine("桌面控制中心已启动；可从任务栏切换，关闭窗口会安全退出工具。\n");
@@ -513,7 +537,7 @@ internal sealed partial class CratePicker : IDisposable
         return addedUnits.Length;
     }
 
-    private static string FormatUnitIds(IEnumerable<int> ids)
+    internal static string FormatUnitIds(IEnumerable<int> ids)
     {
         var values = ids.ToArray();
         var summary = string.Join(", ", values.Take(10));

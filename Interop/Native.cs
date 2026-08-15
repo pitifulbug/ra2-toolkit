@@ -21,12 +21,12 @@ internal static class Native
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool ReadProcessMemory(SafeProcessHandle process, nint address,
-        [Out] byte[] buffer, int size, out int bytesRead);
+        [Out] byte[] buffer, nuint size, out nuint bytesRead);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     internal static extern bool WriteProcessMemory(SafeProcessHandle process, nint address,
-        byte[] buffer, int size, out int bytesWritten);
+        byte[] buffer, nuint size, out nuint bytesWritten);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

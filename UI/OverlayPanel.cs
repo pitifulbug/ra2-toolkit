@@ -28,8 +28,6 @@ internal sealed partial class OverlayPanel : Form
     private bool operationStatusVisible;
     private int operationStatusSequence;
     private bool allowClose;
-    private readonly Dictionary<OverlayCommand, CheckBox> runtimeCheckBoxes = [];
-    private readonly List<Button> runtimeHotkeyButtons = [];
 
     public OverlayPanel()
     {
@@ -48,13 +46,15 @@ internal sealed partial class OverlayPanel : Form
         unlimitedProductionHotkeyButton, chronoLegionnaireHotkeyButton,
         combatHotkeyButton, highDefenseHotkeyButton, superWeaponHotkeyButton,
         promoteHotkeyButton,
-        formationHotkeyButton, infiniteRangeHotkeyButton,
-        spinningMcvHotkeyButton,
+        formationHotkeyButton, infiniteRangeHotkeyButton, fastTurnHotkeyButton,
+        invadeModeHotkeyButton, infiniteSpeedHotkeyButton,
+        spinningMcvHotkeyButton, gamePauseHotkeyButton,
         revealMapHotkeyButton, buildAnywhereHotkeyButton, crateHotkeyButton,
         autoRepairHotkeyButton, crateRouteLinesHotkeyButton,
+        disableGapGeneratorsHotkeyButton,
         flakCannonHotkeyButton, patriotMissileHotkeyButton,
         prismTowerHotkeyButton, teslaCoilHotkeyButton,
-        .. runtimeHotkeyButtons
+        deleteSelectedObjectsHotkeyButton, takeOwnershipSelectedObjectsHotkeyButton
     ];
 
     private void InitializeRuntimeUi()
@@ -71,11 +71,16 @@ internal sealed partial class OverlayPanel : Form
         promoteCheckBox.Tag = OverlayCommand.ToggleEliteUnits;
         formationCheckBox.Tag = OverlayCommand.ToggleFormationMode;
         infiniteRangeCheckBox.Tag = OverlayCommand.ToggleInfiniteRangeMode;
+        fastTurnCheckBox.Tag = OverlayCommand.ToggleFastTurn;
+        invadeModeCheckBox.Tag = OverlayCommand.ToggleInvadeMode;
+        infiniteSpeedCheckBox.Tag = OverlayCommand.ToggleInfiniteSpeedMode;
         spinningMcvCheckBox.Tag = OverlayCommand.ToggleSpinningMcvMode;
+        gamePauseCheckBox.Tag = OverlayCommand.ToggleGamePause;
         revealMapCheckBox.Tag = OverlayCommand.ToggleRevealMap;
         buildAnywhereCheckBox.Tag = OverlayCommand.ToggleBuildAnywhere;
         crateCheckBox.Tag = OverlayCommand.ToggleCratePicker;
         crateRouteLinesCheckBox.Tag = OverlayCommand.ToggleCrateRouteLines;
+        disableGapGeneratorsCheckBox.Tag = OverlayCommand.ToggleDisableGapGenerators;
         autoRepairCheckBox.Tag = OverlayCommand.ToggleAutoRepair;
 
         moneyHotkeyButton.Tag = OverlayCommand.ToggleInfiniteMoney;
@@ -90,16 +95,23 @@ internal sealed partial class OverlayPanel : Form
         promoteHotkeyButton.Tag = OverlayCommand.ToggleEliteUnits;
         formationHotkeyButton.Tag = OverlayCommand.ArrangeSelectedFormation;
         infiniteRangeHotkeyButton.Tag = OverlayCommand.ToggleSelectedInfiniteRange;
+        fastTurnHotkeyButton.Tag = OverlayCommand.ToggleFastTurn;
+        invadeModeHotkeyButton.Tag = OverlayCommand.ToggleInvadeMode;
+        infiniteSpeedHotkeyButton.Tag = OverlayCommand.ToggleSelectedInfiniteSpeed;
         spinningMcvHotkeyButton.Tag = OverlayCommand.ToggleSelectedSpinningMcvs;
+        gamePauseHotkeyButton.Tag = OverlayCommand.ToggleGamePause;
         revealMapHotkeyButton.Tag = OverlayCommand.ToggleRevealMap;
         buildAnywhereHotkeyButton.Tag = OverlayCommand.ToggleBuildAnywhere;
         crateHotkeyButton.Tag = OverlayCommand.ToggleCratePicker;
         autoRepairHotkeyButton.Tag = OverlayCommand.ToggleAutoRepair;
         crateRouteLinesHotkeyButton.Tag = OverlayCommand.ToggleCrateRouteLines;
+        disableGapGeneratorsHotkeyButton.Tag = OverlayCommand.ToggleDisableGapGenerators;
         flakCannonHotkeyButton.Tag = OverlayCommand.AutoBuildFlakCannon;
         patriotMissileHotkeyButton.Tag = OverlayCommand.AutoBuildPatriotMissile;
         prismTowerHotkeyButton.Tag = OverlayCommand.AutoBuildPrismTower;
         teslaCoilHotkeyButton.Tag = OverlayCommand.AutoBuildTeslaCoil;
+        deleteSelectedObjectsHotkeyButton.Tag = OverlayCommand.DeleteSelectedObjects;
+        takeOwnershipSelectedObjectsHotkeyButton.Tag = OverlayCommand.TakeOwnershipSelectedObjects;
 
         try
         {
@@ -114,102 +126,7 @@ internal sealed partial class OverlayPanel : Form
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "未知";
         softwareVersionLabel.Text = $"当前版本：{version}";
-        InitializeCategorizedRuntimeControls();
-        InitializeObjectTab();
         LoadHotkeys();
-    }
-
-    private void InitializeCategorizedRuntimeControls()
-    {
-        combatTabPage.AutoScroll = true;
-        AddRuntimeToggle(combatGroupBox, "极速转身（己方单位立即完成转向）",
-            OverlayCommand.ToggleFastTurn, 7);
-        AddRuntimeToggle(combatGroupBox, "侵略模式（己方单位主动索敌）",
-            OverlayCommand.ToggleInvadeMode, 8);
-        combatGroupBox.Height = FeatureGroupHeight(9);
-
-        AddRuntimeToggle(mapGroupBox, "瘫痪裂缝产生器（停止敌方黑幕）",
-            OverlayCommand.ToggleDisableGapGenerators, 3);
-        mapGroupBox.Height = FeatureGroupHeight(4);
-
-        AddRuntimeToggle(funGroupBox, "暂停游戏", OverlayCommand.ToggleGamePause, 1);
-        funGroupBox.Height = FeatureGroupHeight(2);
-    }
-
-    private void AddRuntimeToggle(
-        GroupBox groupBox, string text, OverlayCommand command, int row)
-    {
-        var checkBox = new CheckBox
-        {
-            Text = text,
-            AutoCheck = false,
-            AutoSize = true,
-            Location = new Point(18, 35 + row * 39),
-            TabIndex = row * 2,
-            Tag = command,
-            UseVisualStyleBackColor = true
-        };
-        checkBox.Click += FeatureCheckBox_Click;
-
-        var button = new Button
-        {
-            Text = "快捷键：尚未设定",
-            Location = new Point(300, 31 + row * 39),
-            Size = new Size(200, 28),
-            TabIndex = row * 2 + 1,
-            Tag = command,
-            UseVisualStyleBackColor = true
-        };
-        button.Click += HotkeyButton_Click;
-
-        runtimeCheckBoxes[command] = checkBox;
-        runtimeHotkeyButtons.Add(button);
-        groupBox.Controls.Add(checkBox);
-        groupBox.Controls.Add(button);
-    }
-
-    private static int FeatureGroupHeight(int rowCount) => 42 + rowCount * 39;
-
-    private void InitializeObjectTab()
-    {
-        var page = new TabPage("对象") { Padding = new Padding(12) };
-        var groupBox = new GroupBox
-        {
-            Text = "选中对象操作",
-            Dock = DockStyle.Top,
-            Height = FeatureGroupHeight(2)
-        };
-        page.Controls.Add(groupBox);
-        mainTabControl.Controls.Add(page);
-
-        AddObjectAction(groupBox, "删除选中单位", OverlayCommand.DeleteSelectedObjects, 0);
-        AddObjectAction(groupBox, "选中单位归我方",
-            OverlayCommand.TakeOwnershipSelectedObjects, 1);
-    }
-
-    private void AddObjectAction(
-        GroupBox groupBox, string text, OverlayCommand command, int row)
-    {
-        var label = new Label
-        {
-            Text = text,
-            AutoSize = true,
-            Location = new Point(18, 35 + row * 39),
-            TabIndex = row * 2
-        };
-        var button = new Button
-        {
-            Text = "快捷键：尚未设定",
-            Location = new Point(300, 31 + row * 39),
-            Size = new Size(200, 28),
-            TabIndex = row * 2 + 1,
-            Tag = command,
-            UseVisualStyleBackColor = true
-        };
-        button.Click += HotkeyButton_Click;
-        runtimeHotkeyButtons.Add(button);
-        groupBox.Controls.Add(label);
-        groupBox.Controls.Add(button);
     }
 
     protected override async void OnShown(EventArgs e)
@@ -237,6 +154,7 @@ internal sealed partial class OverlayPanel : Form
             promoteCheckBox.Checked = state.EliteUnits;
             formationCheckBox.Checked = state.FormationMode;
             infiniteRangeCheckBox.Checked = state.InfiniteRangeMode;
+            infiniteSpeedCheckBox.Checked = state.InfiniteSpeedMode;
             spinningMcvCheckBox.Checked = state.SpinningMcvMode;
             crateCheckBox.Checked = state.CratePicker;
             crateRouteLinesCheckBox.Checked = state.CrateRouteLines;
@@ -248,20 +166,14 @@ internal sealed partial class OverlayPanel : Form
             buildAnywhereCheckBox.Checked = state.BuildAnywhere;
             autoRepairCheckBox.Checked = state.AutoRepair;
             superWeaponCheckBox.Checked = state.SuperWeaponNoCooldown;
-            SetRuntimeChecked(OverlayCommand.ToggleFastTurn, state.FastTurn);
-            SetRuntimeChecked(OverlayCommand.ToggleDisableGapGenerators, state.DisableGapGenerators);
-            SetRuntimeChecked(OverlayCommand.ToggleInvadeMode, state.InvadeMode);
-            SetRuntimeChecked(OverlayCommand.ToggleGamePause, state.GamePaused);
+            fastTurnCheckBox.Checked = state.FastTurn;
+            disableGapGeneratorsCheckBox.Checked = state.DisableGapGenerators;
+            invadeModeCheckBox.Checked = state.InvadeMode;
+            gamePauseCheckBox.Checked = state.GamePaused;
 
             foreach (var control in RestrictedFeatureControls)
                 control.Enabled = state.RestrictedFeaturesAvailable;
         });
-    }
-
-    private void SetRuntimeChecked(OverlayCommand command, bool value)
-    {
-        if (runtimeCheckBoxes.TryGetValue(command, out var checkBox))
-            checkBox.Checked = value;
     }
 
     public void ShowOperationStatus(string message, bool isError = false)
@@ -283,11 +195,15 @@ internal sealed partial class OverlayPanel : Form
         superWeaponCheckBox, superWeaponHotkeyButton,
         promoteCheckBox, promoteHotkeyButton,
         infiniteRangeCheckBox, infiniteRangeHotkeyButton,
+        infiniteSpeedCheckBox, infiniteSpeedHotkeyButton,
         spinningMcvCheckBox, spinningMcvHotkeyButton,
         flakCannonHotkeyButton, patriotMissileHotkeyButton,
         prismTowerHotkeyButton, teslaCoilHotkeyButton,
-        .. runtimeCheckBoxes.Values,
-        .. runtimeHotkeyButtons
+        fastTurnCheckBox, fastTurnHotkeyButton,
+        invadeModeCheckBox, invadeModeHotkeyButton,
+        disableGapGeneratorsCheckBox, disableGapGeneratorsHotkeyButton,
+        gamePauseCheckBox, gamePauseHotkeyButton,
+        deleteSelectedObjectsHotkeyButton, takeOwnershipSelectedObjectsHotkeyButton
     ];
 
     public void RequestClose()
@@ -409,19 +325,19 @@ internal sealed partial class OverlayPanel : Form
         {
             if (binding.Value.Key != key || binding.Value.Modifiers != modifiers)
                 continue;
-            if (binding.Key != OverlayCommand.ToggleCratePicker)
+            if (binding.Key == OverlayCommand.ToggleCratePicker)
             {
-                dispatch(binding.Key);
+                var now = DateTime.UtcNow;
+                var isDoublePress = now - lastCrateHotkeyAt <=
+                                    TimeSpan.FromMilliseconds(SystemInformation.DoubleClickTime);
+                lastCrateHotkeyAt = isDoublePress ? DateTime.MinValue : now;
+                dispatch(isDoublePress
+                    ? OverlayCommand.DisableSelectedCratePickers
+                    : OverlayCommand.EnableSelectedCratePickers);
                 continue;
             }
 
-            var now = DateTime.UtcNow;
-            var isDoublePress = now - lastCrateHotkeyAt <=
-                                TimeSpan.FromMilliseconds(SystemInformation.DoubleClickTime);
-            lastCrateHotkeyAt = isDoublePress ? DateTime.MinValue : now;
-            dispatch(isDoublePress
-                ? OverlayCommand.DisableSelectedCratePickers
-                : OverlayCommand.EnableSelectedCratePickers);
+            dispatch(binding.Key);
         }
     }
 
@@ -499,6 +415,8 @@ internal sealed partial class OverlayPanel : Form
         OverlayCommand.ArrangeSelectedFormation => "方阵排列",
         OverlayCommand.ToggleInfiniteRangeMode => "无限射程",
         OverlayCommand.ToggleSelectedInfiniteRange => "无限射程",
+        OverlayCommand.ToggleInfiniteSpeedMode => "无限移速",
+        OverlayCommand.ToggleSelectedInfiniteSpeed => "无限移速",
         OverlayCommand.ToggleSpinningMcvMode => "基地车转圈",
         OverlayCommand.ToggleSelectedSpinningMcvs => "基地车转圈",
         OverlayCommand.ToggleInstantBuild => "快速建造",
@@ -523,7 +441,7 @@ internal sealed partial class OverlayPanel : Form
         if (updateCheckInProgress)
             return;
         updateCheckInProgress = true;
-        SetUpdateStatus("正在联络更新服务器…");
+        SetUpdateStatus("正在检查更新");
         updateProgressBar.Visible = true;
         updateProgressBar.Style = ProgressBarStyle.Marquee;
         updateProgressBar.MarqueeAnimationSpeed = 28;
@@ -535,7 +453,7 @@ internal sealed partial class OverlayPanel : Form
                 AutomaticDecompression = DecompressionMethods.All
             };
             using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("ra2-toolkit-update-checker/1.0.2");
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("ra2-toolkit-update-checker/1.0.3");
             var (latest, downloadUrl) = await GetLatestReleaseAsync(client);
             var current = Assembly.GetExecutingAssembly().GetName().Version ?? new Version();
             if (latest > current)
@@ -662,16 +580,16 @@ internal sealed partial class OverlayPanel : Form
         action();
     }
 
-    private void softwareVersionLabel_Click(object? sender, EventArgs e)
+    private async void softwareVersionLabel_Click(object? sender, EventArgs e)
     {
-        MessageBox.Show(this,
-            "RA2 Toolkit 是由 pitifulbug 开发的《红色警戒 2》辅助工具，\n" +
-            "本软件开源免费，使用时请遵守游戏规则和道德规范。\n\n" +
-            "如果你在使用过程中遇到问题或有任何建议，\n" +
-            "欢迎通过 GitHub Issues 或电子邮件与我们联系。\n\n" +
-            "GitHub: https://github.com/pitifulbug/ra2-toolkit\n" +
-            "Email: pitifulbug@gmail.com", "关于 RA2 Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        await CheckForUpdatesAsync();
     }
+
+    private void OverlayPanel_Load(object? sender, EventArgs e)
+    {
+
+    }
+
 }
 
 internal readonly record struct HotkeyBinding(uint Modifiers, Keys Key)

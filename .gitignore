@@ -10,7 +10,7 @@ bin/
 obj/
 artifacts/
 publish/
-
+AGENTS.md
 # 本地参考资料与发行包辅助文件
 .reference/
 release/
@@ -27,6 +27,10 @@ release/
 
 # 日志、缓存与临时文件
 .dotnet-cli/
+.dotnet-home/
+.verify/
+TestResults/
+Tests/TestResults/
 *.log
 *.tmp
 *.temp

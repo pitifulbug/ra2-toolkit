@@ -39,6 +39,156 @@ internal sealed partial class CratePicker
         nextInfiniteRangeValidationAt = DateTime.MinValue;
     }
 
+    private void ToggleInfiniteSpeedMode()
+    {
+        if (infiniteSpeedModeEnabled)
+        {
+            DisableInfiniteSpeedMode();
+            return;
+        }
+
+        infiniteSpeedModeEnabled = true;
+    }
+
+    private int ToggleSelectedInfiniteSpeed()
+    {
+        if (!infiniteSpeedModeEnabled)
+            return int.MinValue;
+
+        var selected = CaptureSelectedUnits();
+        if (selected.Count == 0)
+            return 0;
+
+        var speedBoost = ReadDouble(PowerupArguments + PowerupSpeedArgumentIndex * sizeof(double));
+        if (!IsReasonableSpeedMultiplier(speedBoost))
+            throw new InvalidOperationException("游戏速度箱倍率无效，未修改选中单位。");
+
+        var restoreSelected = selected.All(infiniteSpeedUnits.ContainsKey);
+        var affected = 0;
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+            foreach (var unit in selected)
+            {
+                if (restoreSelected)
+                {
+                    if (!infiniteSpeedUnits.TryGetValue(unit, out var restoredMultiplier))
+                        continue;
+                    if (IsCapturedFootIdentityValid(unit))
+                        WriteBytes(unit.Pointer + FootSpeedMultiplierOffset,
+                            BitConverter.GetBytes(restoredMultiplier));
+                    infiniteSpeedUnits.Remove(unit);
+                    affected++;
+                    continue;
+                }
+
+                if (infiniteSpeedUnits.ContainsKey(unit) || !IsCapturedUnitValid(unit))
+                    continue;
+                var originalMultiplier = ReadDouble(unit.Pointer + FootSpeedMultiplierOffset);
+                if (!IsReasonableSpeedMultiplier(originalMultiplier))
+                    continue;
+                var boostedMultiplier = CalculateInfiniteSpeedMultiplier(originalMultiplier, speedBoost);
+                if (boostedMultiplier == originalMultiplier)
+                    continue;
+                infiniteSpeedUnits.Add(unit, originalMultiplier);
+                WriteBytes(unit.Pointer + FootSpeedMultiplierOffset,
+                    BitConverter.GetBytes(boostedMultiplier));
+                affected++;
+            }
+        }
+        finally
+        {
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+
+        return restoreSelected ? -affected : affected;
+    }
+
+    private void DisableInfiniteSpeedMode()
+    {
+        if (!infiniteSpeedModeEnabled && infiniteSpeedUnits.Count == 0)
+            return;
+        if (IsGameProcessUnavailable())
+        {
+            infiniteSpeedModeEnabled = false;
+            infiniteSpeedUnits.Clear();
+            return;
+        }
+
+        RestoreInfiniteSpeedUnits();
+        infiniteSpeedModeEnabled = false;
+    }
+
+    private void RestoreInfiniteSpeedUnits()
+    {
+        if (infiniteSpeedUnits.Count == 0)
+            return;
+
+        var suspended = false;
+        try
+        {
+            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            suspended = true;
+            var restoreFailures = 0;
+            foreach (var entry in infiniteSpeedUnits.ToArray())
+            {
+                if (!IsCapturedFootIdentityValid(entry.Key))
+                {
+                    infiniteSpeedUnits.Remove(entry.Key);
+                    continue;
+                }
+                try
+                {
+                    WriteBytes(entry.Key.Pointer + FootSpeedMultiplierOffset,
+                        BitConverter.GetBytes(entry.Value));
+                    infiniteSpeedUnits.Remove(entry.Key);
+                }
+                catch (Win32Exception)
+                {
+                    restoreFailures++;
+                }
+            }
+            if (restoreFailures != 0)
+                throw new InvalidOperationException(
+                    $"有 {restoreFailures} 个单位的原始移动速度仍待恢复，请重试关闭无限移速。");
+        }
+        finally
+        {
+            if (suspended)
+                CheckNtStatus(Native.NtResumeProcess(handle), "恢复游戏进程失败");
+        }
+    }
+
+    private bool IsCapturedFootIdentityValid(CapturedUnit unit)
+    {
+        try
+        {
+            return ReadInt32(unit.Pointer + 0x10) == unit.Id &&
+                   VectorContains(FootArray, unit.Pointer);
+        }
+        catch (Win32Exception)
+        {
+            return false;
+        }
+    }
+
+    internal static bool IsReasonableSpeedMultiplier(double value) =>
+        double.IsFinite(value) && value is >= 0.05 and <= 10.0;
+
+    internal static double CalculateInfiniteSpeedMultiplier(
+        double originalMultiplier, double speedBoost)
+    {
+        if (!IsReasonableSpeedMultiplier(originalMultiplier) ||
+            !IsReasonableSpeedMultiplier(speedBoost))
+            return originalMultiplier;
+
+        var boosted = originalMultiplier * speedBoost;
+        return IsReasonableSpeedMultiplier(boosted) ? boosted : originalMultiplier;
+    }
+
     private int ToggleSelectedInfiniteRange()
     {
         var selected = CaptureSelectedUnits();
@@ -683,7 +833,7 @@ internal sealed partial class CratePicker
         WriteUInt16(unit.Pointer + TechnoSecondaryFacingOffset + 4, facing);
     }
 
-    private static ushort GetFormationFacing((int X, int Y) direction) => direction switch
+    internal static ushort GetFormationFacing((int X, int Y) direction) => direction switch
     {
         (1, 0) => 0x6000,
         (0, -1) => 0x2000,

@@ -38,35 +38,91 @@ internal sealed partial class CratePicker
         }
     }
 
-    private (short X, short Y)? ReadSafeCell()
+    private (short X, short Y)? ReadSafeCell(CapturedUnit unit, int attempt)
     {
         var house = ReadUInt32(CurrentPlayer);
         if (house == 0)
             return null;
 
-        var center = (X: ReadInt16(house + HouseBaseCenterOffset),
+        var fallback = (X: ReadInt16(house + HouseBaseCenterOffset),
             Y: ReadInt16(house + HouseBaseCenterOffset + 2));
-        if (center == (0, 0))
+        if (fallback == (0, 0))
         {
-            center = (ReadInt16(house + HouseBaseSpawnCellOffset),
+            fallback = (ReadInt16(house + HouseBaseSpawnCellOffset),
                 ReadInt16(house + HouseBaseSpawnCellOffset + 2));
         }
 
-        var left = ReadInt32(Map + MapBoundsOffset);
-        var top = ReadInt32(Map + MapBoundsOffset + 4);
-        var right = ReadInt32(Map + MapBoundsOffset + 8);
-        var bottom = ReadInt32(Map + MapBoundsOffset + 12);
-        return center.X > 0 && center.Y > 0 &&
-               center.X >= left && center.X <= right &&
-               center.Y >= top && center.Y <= bottom
-            ? center
-            : null;
+        var reference = fallback == (0, 0)
+            ? ReadUnitCell(unit.Pointer)
+            : ((int X, int Y))fallback;
+        var constructionYard = ReadMainBaseCell(house, reference);
+        var anchor = constructionYard ?? fallback;
+
+        if (ReadMapBounds() is not { } bounds)
+            return null;
+        if (anchor.X <= 0 || anchor.Y <= 0)
+            return null;
+
+        var reservedCells = units
+            .Where(state => state.InvalidSince is null && state.Unit != unit &&
+                            state.WaitingForCrate && state.SafeCell is not null)
+            .Select(state => state.SafeCell!.Value)
+            .ToHashSet();
+        var start = (unit.Id + Math.Max(0, attempt)) % BaseReturnOffsets.Length;
+        for (var index = 0; index < BaseReturnOffsets.Length; index++)
+        {
+            var offset = BaseReturnOffsets[(start + index) % BaseReturnOffsets.Length];
+            var x = anchor.X + offset.X;
+            var y = anchor.Y + offset.Y;
+            if (x > 0 && y > 0 && x <= short.MaxValue && y <= short.MaxValue &&
+                x >= bounds.Left && x <= bounds.Right &&
+                y >= bounds.Top && y <= bounds.Bottom)
+            {
+                var candidate = (X: checked((short)x), Y: checked((short)y));
+                if (!reservedCells.Contains(candidate))
+                    return candidate;
+            }
+        }
+
+        return null;
+    }
+
+    private (short X, short Y)? ReadMainBaseCell(
+        uint house, (int X, int Y) reference)
+    {
+        (short X, short Y)? result = null;
+        var bestDistance = long.MaxValue;
+        var bestId = int.MaxValue;
+        foreach (var building in ReadVector(BuildingArray, 4096))
+        {
+            if (ReadUInt32(building + TechnoOwnerOffset) != house ||
+                ReadByte(building + ObjectIsOnMapOffset) == 0 ||
+                ReadByte(building + ObjectInLimboOffset) != 0 ||
+                ReadByte(building + ObjectIsAliveOffset) == 0)
+                continue;
+            var type = ReadUInt32(building + BuildingTypeOffset);
+            if (type == 0 || !ConstructionYardTypeIds.Contains(ReadTypeId(type)))
+                continue;
+            var cell = ReadUnitCell(building);
+            if (cell.X is <= 0 or > short.MaxValue || cell.Y is <= 0 or > short.MaxValue)
+                continue;
+            var distance = DistanceSquared(cell, reference);
+            var id = ReadInt32(building + 0x10);
+            if (distance > bestDistance || distance == bestDistance && id >= bestId)
+                continue;
+            result = (checked((short)cell.X), checked((short)cell.Y));
+            bestDistance = distance;
+            bestId = id;
+        }
+        return result;
     }
 
     private static void ResetWaitingState(UnitState state)
     {
         state.WaitingForCrate = false;
         state.SafeCell = null;
+        state.SafeCellAttempt = 0;
+        state.AtSafePlace = false;
         state.LastSafeObservedCell = default;
         state.LastSafeProgressAt = DateTime.MinValue;
     }
@@ -92,11 +148,8 @@ internal sealed partial class CratePicker
 
     private List<CrateSlot> ReadActiveCrates()
     {
-        var bounds = ReadBytes(Map + MapBoundsOffset, 16);
-        var left = BitConverter.ToInt32(bounds, 0);
-        var top = BitConverter.ToInt32(bounds, 4);
-        var right = BitConverter.ToInt32(bounds, 8);
-        var bottom = BitConverter.ToInt32(bounds, 12);
+        if (ReadMapBounds() is not { } bounds)
+            return [];
         var crateData = ReadBytes(Map + CratesOffset, 256 * 16);
         var result = new List<CrateSlot>();
 
@@ -105,10 +158,23 @@ internal sealed partial class CratePicker
             var offset = index * 16;
             var x = BitConverter.ToInt16(crateData, offset + 12);
             var y = BitConverter.ToInt16(crateData, offset + 14);
-            if (x >= left && x <= right && y >= top && y <= bottom && x > 0 && y > 0)
+            if (x >= bounds.Left && x <= bounds.Right &&
+                y >= bounds.Top && y <= bounds.Bottom && x > 0 && y > 0)
                 result.Add(new CrateSlot(index, x, y));
         }
         return result;
+    }
+
+    private (long Left, long Top, long Right, long Bottom)? ReadMapBounds()
+    {
+        var data = ReadBytes(Map + MapBoundsOffset, 16);
+        var left = BitConverter.ToInt32(data, 0);
+        var top = BitConverter.ToInt32(data, 4);
+        var width = BitConverter.ToInt32(data, 8);
+        var height = BitConverter.ToInt32(data, 12);
+        if (width <= 0 || height <= 0)
+            return null;
+        return (left, top, (long)left + width - 1, (long)top + height - 1);
     }
 
     private (int X, int Y) ReadUnitCell(uint pointer)
@@ -259,7 +325,7 @@ internal sealed partial class CratePicker
         _ = FindCurrentHouseIndex();
     }
 
-    private static long DistanceSquared((int X, int Y) a, (int X, int Y) b)
+    internal static long DistanceSquared((int X, int Y) a, (int X, int Y) b)
     {
         var dx = (long)a.X - b.X;
         var dy = (long)a.Y - b.Y;
@@ -277,7 +343,8 @@ internal sealed partial class CratePicker
     private byte[] ReadBytes(long address, int length)
     {
         var data = new byte[length];
-        if (!Native.ReadProcessMemory(handle, (nint)address, data, length, out var read) || read != length)
+        if (!Native.ReadProcessMemory(handle, (nint)address, data, (nuint)length, out var read) ||
+            read != (nuint)length)
         {
             var error = Marshal.GetLastWin32Error();
             if (IsGameProcessUnavailable())
@@ -311,7 +378,8 @@ internal sealed partial class CratePicker
 
     private void WriteBytes(long address, byte[] data)
     {
-        if (!Native.WriteProcessMemory(handle, (nint)address, data, data.Length, out var written) || written != data.Length)
+        if (!Native.WriteProcessMemory(handle, (nint)address, data, (nuint)data.Length, out var written) ||
+            written != (nuint)data.Length)
         {
             var error = Marshal.GetLastWin32Error();
             if (IsGameProcessUnavailable())
@@ -334,12 +402,13 @@ internal sealed partial class CratePicker
             if (!IsGameProcessUnavailable())
             {
                 DisableCrateActionLines();
-                DisableRevealMap();
+                DisableRevealMapBestEffort();
                 DisableInfiniteMoney();
                 DisableOneHitKill();
                 DisableHighDefense();
                 DisableEliteUnits();
                 DisableInfiniteRangeMode();
+                DisableInfiniteSpeedMode();
                 ReleaseInfiniteRangePatch();
                 DisableSpinningMcvMode();
                 DisableMaximumPower();
@@ -377,6 +446,8 @@ internal sealed partial class CratePicker
         public DateTime? InvalidSince { get; set; }
         public bool WaitingForCrate { get; set; }
         public (short X, short Y)? SafeCell { get; set; }
+        public int SafeCellAttempt { get; set; }
+        public bool AtSafePlace { get; set; }
         public (int X, int Y) LastSafeObservedCell { get; set; }
         public DateTime LastSafeProgressAt { get; set; } = DateTime.MinValue;
     }
