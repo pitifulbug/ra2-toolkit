@@ -1,4 +1,3 @@
 <Solution>
-  <Project Path="ra2-toolkit.csproj" />
-  <Project Path="Tests\ra2-toolkit.Tests.csproj" />
+  <Project Path="src\RA2Toolkit\RA2Toolkit.csproj" />
 </Solution>

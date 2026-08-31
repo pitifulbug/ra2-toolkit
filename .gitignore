@@ -14,6 +14,7 @@ AGENTS.md
 # 本地参考资料与发行包辅助文件
 .reference/
 release/
+.verify
 
 # 已生成的二进制与压缩包
 *.exe
@@ -29,8 +30,6 @@ release/
 .dotnet-cli/
 .dotnet-home/
 .verify/
-TestResults/
-Tests/TestResults/
 *.log
 *.tmp
 *.temp

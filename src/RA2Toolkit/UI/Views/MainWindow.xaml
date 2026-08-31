@@ -1,0 +1,112 @@
+<Window x:Class="MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="RA2 Toolkit"
+        Width="570" Height="430" MinWidth="570" MinHeight="430"
+        WindowStartupLocation="CenterScreen">
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolVisibility" />
+    </Window.Resources>
+
+    <DockPanel>
+        <StatusBar DockPanel.Dock="Bottom">
+            <StatusBarItem HorizontalContentAlignment="Stretch">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0" Text="{Binding VersionText}"
+                               VerticalAlignment="Center" Cursor="Hand">
+                        <TextBlock.InputBindings>
+                            <MouseBinding MouseAction="LeftClick"
+                                          Command="{Binding CheckUpdatesCommand}" />
+                        </TextBlock.InputBindings>
+                    </TextBlock>
+                    <TextBlock Grid.Column="1" Text="{Binding StatusText}"
+                               Margin="8,0" VerticalAlignment="Center"
+                               TextTrimming="CharacterEllipsis" />
+                    <ProgressBar Grid.Column="2" Width="100" Height="16"
+                                 IsIndeterminate="True"
+                                 Visibility="{Binding IsUpdateChecking, Converter={StaticResource BoolVisibility}}" />
+                    <Button Grid.Column="3" Content="{Binding UpdateText}"
+                            Command="{Binding OpenReleaseCommand}"
+                            Margin="8,0,0,0"
+                            Visibility="{Binding HasUpdateText, Converter={StaticResource BoolVisibility}}" />
+                    <TextBlock Grid.Column="4" Text="报告问题"
+                               Margin="8,0,0,0" VerticalAlignment="Center" Cursor="Hand">
+                        <TextBlock.InputBindings>
+                            <MouseBinding MouseAction="LeftClick"
+                                          Command="{Binding OpenFeedbackCommand}" />
+                        </TextBlock.InputBindings>
+                    </TextBlock>
+                </Grid>
+            </StatusBarItem>
+        </StatusBar>
+
+        <TabControl ItemsSource="{Binding FeatureGroups}">
+            <TabControl.ItemTemplate>
+                <DataTemplate>
+                    <TextBlock Text="{Binding Title}" />
+                </DataTemplate>
+            </TabControl.ItemTemplate>
+            <TabControl.ContentTemplate>
+                <DataTemplate>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <GroupBox Header="{Binding GroupTitle}" Margin="12">
+                            <StackPanel Margin="8">
+                                <TextBlock Text="{Binding Hint}" TextWrapping="Wrap" />
+
+                                <ItemsControl ItemsSource="{Binding ToggleFeatures}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,5" IsEnabled="{Binding IsAvailable}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="200" />
+                                                </Grid.ColumnDefinitions>
+                                                <CheckBox Grid.Column="0"
+                                                          Content="{Binding CompactLabel}"
+                                                          ToolTip="{Binding Description}"
+                                                          IsChecked="{Binding IsActive, Mode=OneWay}"
+                                                          Command="{Binding PrimaryCommand}"
+                                                          VerticalAlignment="Center" />
+                                                <Button Grid.Column="1" Width="200" Height="28"
+                                                        Content="{Binding HotkeyText}"
+                                                        Command="{Binding CaptureHotkeyCommand}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <ItemsControl ItemsSource="{Binding ActionFeatures}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,5" IsEnabled="{Binding IsAvailable}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="200" />
+                                                </Grid.ColumnDefinitions>
+                                                <Label Grid.Column="0" Content="{Binding Title}"
+                                                       ToolTip="{Binding Description}"
+                                                       VerticalAlignment="Center" />
+                                                <Button Grid.Column="1" Width="200" Height="28"
+                                                        Content="{Binding HotkeyText}"
+                                                        Command="{Binding CaptureHotkeyCommand}" />
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </GroupBox>
+                    </ScrollViewer>
+                </DataTemplate>
+            </TabControl.ContentTemplate>
+        </TabControl>
+    </DockPanel>
+</Window>
