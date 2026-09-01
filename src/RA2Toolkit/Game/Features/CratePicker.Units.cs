@@ -8,56 +8,20 @@ using Microsoft.Win32.SafeHandles;
 
 internal sealed partial class CratePicker
 {
-    private void ToggleSpinningMcvMode()
-    {
-        if (spinningMcvModeEnabled)
-        {
-            DisableSpinningMcvMode();
-            return;
-        }
-
-        spinningMcvModeEnabled = true;
-        nextMcvSpinAt = DateTime.MinValue;
-    }
-
     private void DisableSpinningMcvMode()
     {
         spinningMcvModeEnabled = false;
         spinningMcvs.Clear();
     }
 
-    private void ToggleInfiniteRangeMode()
-    {
-        if (infiniteRangeModeEnabled)
-        {
-            DisableInfiniteRangeMode();
-            return;
-        }
-
-        InstallInfiniteRangePatch();
-        infiniteRangeModeEnabled = true;
-        nextInfiniteRangeValidationAt = DateTime.MinValue;
-    }
-
-    private void ToggleInfiniteSpeedMode()
-    {
-        if (infiniteSpeedModeEnabled)
-        {
-            DisableInfiniteSpeedMode();
-            return;
-        }
-
-        infiniteSpeedModeEnabled = true;
-    }
-
     private int ToggleSelectedInfiniteSpeed()
     {
-        if (!infiniteSpeedModeEnabled)
-            return int.MinValue;
-
         var selected = CaptureSelectedUnits();
         if (selected.Count == 0)
             return 0;
+
+        if (!infiniteSpeedModeEnabled)
+            infiniteSpeedModeEnabled = true;
 
         var speedBoost = ReadDouble(PowerupArguments + PowerupSpeedArgumentIndex * sizeof(double));
         if (!IsReasonableSpeedMultiplier(speedBoost))
@@ -68,7 +32,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             foreach (var unit in selected)
             {
@@ -101,7 +65,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
 
         return restoreSelected ? -affected : affected;
@@ -130,7 +94,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             var restoreFailures = 0;
             foreach (var entry in infiniteSpeedUnits.ToArray())
@@ -158,7 +122,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 
@@ -196,7 +160,11 @@ internal sealed partial class CratePicker
             return 0;
 
         if (!infiniteRangeModeEnabled)
-            return int.MinValue;
+        {
+            InstallInfiniteRangePatch();
+            infiniteRangeModeEnabled = true;
+            nextInfiniteRangeValidationAt = DateTime.MinValue;
+        }
 
         int affected;
         if (selected.All(infiniteRangeUnits.Contains))
@@ -259,7 +227,11 @@ internal sealed partial class CratePicker
         return result;
     }
 
-    private void InvokeSelectedObjectAction(IReadOnlyList<CapturedUnit> objects, bool takeOwnership)
+    private void InvokeSelectedObjectAction(IReadOnlyList<CapturedUnit> objects, bool takeOwnership) =>
+        InvokeObjectAction(objects, takeOwnership, CurrentObjects, 100);
+
+    private void InvokeObjectAction(IReadOnlyList<CapturedUnit> objects, bool takeOwnership,
+        long membershipVector, int maximumCount)
     {
         if (!ReadBytes(LogicUpdate, LogicUpdateOriginalBytes.Length)
                 .AsSpan().SequenceEqual(LogicUpdateOriginalBytes))
@@ -304,15 +276,16 @@ internal sealed partial class CratePicker
                     code.AddRange(new byte[4]);
                 }
 
-                code.Add(0xA1); // mov eax,[CurrentObjects.Items]
-                code.AddRange(BitConverter.GetBytes(checked((uint)(CurrentObjects + 4))));
-                code.AddRange(Convert.FromHexString("8B15")); // mov edx,[CurrentObjects.Count]
-                code.AddRange(BitConverter.GetBytes(checked((uint)(CurrentObjects + 16))));
+                code.Add(0xA1); // mov eax,[membershipVector.Items]
+                code.AddRange(BitConverter.GetBytes(checked((uint)(membershipVector + 4))));
+                code.AddRange(Convert.FromHexString("8B15")); // mov edx,[membershipVector.Count]
+                code.AddRange(BitConverter.GetBytes(checked((uint)(membershipVector + 16))));
                 code.AddRange(Convert.FromHexString("85C0")); // test eax,eax
                 SkipIf(0x84);
                 code.AddRange(Convert.FromHexString("85D2")); // test edx,edx
                 SkipIf(0x8E);
-                code.AddRange(Convert.FromHexString("81FA64000000")); // cmp edx,100
+                code.AddRange(Convert.FromHexString("81FA")); // cmp edx,maximumCount
+                code.AddRange(BitConverter.GetBytes(maximumCount));
                 SkipIf(0x8F);
 
                 var searchLoop = code.Count;
@@ -476,16 +449,20 @@ internal sealed partial class CratePicker
 
         try
         {
-            if (infiniteRangeCodeCave != 0)
+            if (infiniteRangeCodeCave == 0)
+                throw new InvalidOperationException("无限射程补丁缺少代码区，保留补丁所有权以供重试。");
+            var rangeJump = CreateRelativePatch(TechnoRangeValue,
+                TechnoRangeValueOriginalBytes.Length, infiniteRangeCodeCave.ToInt64());
+            if (!UpdateInstalledAfterRestore(ref infiniteRangePatchInstalled,
+                    () => RestoreOwnedCodePatch(
+                        TechnoRangeValue, TechnoRangeValueOriginalBytes, rangeJump)))
             {
-                var rangeJump = CreateRelativePatch(TechnoRangeValue,
-                    TechnoRangeValueOriginalBytes.Length, infiniteRangeCodeCave.ToInt64());
-                RestoreOwnedCodePatch(TechnoRangeValue, TechnoRangeValueOriginalBytes, rangeJump);
+                throw new InvalidOperationException(
+                    "无限射程补丁未能确认恢复，已保留补丁所有权以供重试。");
             }
         }
         finally
         {
-            infiniteRangePatchInstalled = false;
             if (infiniteRangeCountAddress != 0)
             {
                 try { WriteInt32(infiniteRangeCountAddress, 0); }
@@ -653,6 +630,16 @@ internal sealed partial class CratePicker
         }
     }
 
+    internal static bool UpdateInstalledAfterRestore(
+        ref bool installed, Func<bool> restore)
+    {
+        ArgumentNullException.ThrowIfNull(restore);
+        var restored = restore();
+        if (restored)
+            installed = false;
+        return restored;
+    }
+
     private void RestoreHook(long address, byte[] originalBytes, ref nint cave)
     {
         if (cave == 0)
@@ -670,11 +657,22 @@ internal sealed partial class CratePicker
 
     private void ReleaseInfiniteRangePatch()
     {
-        if (infiniteRangeCodeCave == 0)
+        if (!RetireCaveIfUninstalled(infiniteRangePatchInstalled,
+                ref infiniteRangeCodeCave, RetireCodeCave))
             return;
-        RetireCodeCave(ref infiniteRangeCodeCave);
         infiniteRangeCountAddress = 0;
         infiniteRangeTableAddress = 0;
+    }
+
+    internal static bool RetireCaveIfUninstalled(
+        bool installed, ref nint cave, Action<nint> retire)
+    {
+        ArgumentNullException.ThrowIfNull(retire);
+        if (installed || cave == 0)
+            return false;
+        retire(cave);
+        cave = 0;
+        return true;
     }
 
     private void UpdateInfiniteRangeTable()
@@ -740,14 +738,17 @@ internal sealed partial class CratePicker
 
     private int ToggleSelectedSpinningMcvs()
     {
-        if (!spinningMcvModeEnabled)
-            return int.MinValue;
-
         var selectedMcvs = CaptureSelectedUnits()
             .Where(IsMcv)
             .ToArray();
         if (selectedMcvs.Length == 0)
             return 0;
+
+        if (!spinningMcvModeEnabled)
+        {
+            spinningMcvModeEnabled = true;
+            nextMcvSpinAt = DateTime.MinValue;
+        }
 
         if (selectedMcvs.All(spinningMcvs.ContainsKey))
         {

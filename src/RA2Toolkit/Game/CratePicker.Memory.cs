@@ -8,6 +8,9 @@ using Microsoft.Win32.SafeHandles;
 
 internal sealed partial class CratePicker
 {
+    private const int InfiniteRangeCleanupAttempts = 3;
+    private bool processResumePending;
+
     private uint[] ReadVector(long vectorAddress, int maximumCount)
     {
         var header = ReadBytes(vectorAddress, 20);
@@ -249,7 +252,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             var count = ReadInt32(OutList);
             var tail = ReadInt32(OutList + 8);
@@ -294,7 +297,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 
@@ -306,7 +309,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             var count = ReadInt32(OutList);
             var tail = ReadInt32(OutList + 8);
@@ -332,7 +335,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 
@@ -483,13 +486,31 @@ internal sealed partial class CratePicker
         return status;
     }
 
+    private void SuspendProcessOrThrow()
+    {
+        EnsureProcessResumed();
+        CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+    }
+
+    private void ResumeSuspendedProcessOrThrow()
+    {
+        var status = ResumeProcessWithRetry();
+        if (status < 0)
+        {
+            processResumePending = true;
+            throw new InvalidOperationException(
+                $"恢复游戏进程失败，游戏可能仍处于暂停状态（NTSTATUS 0x{status:X8}）");
+        }
+        processResumePending = false;
+    }
+
     private void WithSuspendedProcess(Action action)
     {
         var suspended = false;
         Exception? operationError = null;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             action();
         }
@@ -505,14 +526,31 @@ internal sealed partial class CratePicker
                 var status = ResumeProcessWithRetry();
                 if (status < 0)
                 {
+                    processResumePending = true;
                     var resumeError = new InvalidOperationException(
-                        $"恢复游戏进程失败（NTSTATUS 0x{status:X8}）");
+                        $"恢复游戏进程失败，游戏可能仍处于暂停状态（NTSTATUS 0x{status:X8}）");
                     if (operationError is null)
                         throw resumeError;
-                    Console.Error.WriteLine($"[游戏进程恢复失败] {resumeError.Message}");
+                    throw new InvalidOperationException(
+                        "游戏内存操作失败，且恢复游戏进程也失败。",
+                        new AggregateException(operationError, resumeError));
                 }
+                processResumePending = false;
             }
         }
+    }
+
+    private void EnsureProcessResumed()
+    {
+        if (!processResumePending)
+            return;
+        var status = ResumeProcessWithRetry();
+        if (status < 0)
+        {
+            throw new InvalidOperationException(
+                $"再次恢复游戏进程失败，游戏可能仍处于暂停状态（NTSTATUS 0x{status:X8}）");
+        }
+        processResumePending = false;
     }
 
     private void WriteCodeCave(nint cave, byte[] code)
@@ -636,6 +674,23 @@ internal sealed partial class CratePicker
             Native.VirtualFreeEx(handle, cave, 0, Native.MemRelease);
     }
 
+    internal static int RunCleanupWithRetry(
+        Func<bool> cleanupPending, Action cleanupAttempt, int maximumAttempts)
+    {
+        ArgumentNullException.ThrowIfNull(cleanupPending);
+        ArgumentNullException.ThrowIfNull(cleanupAttempt);
+        if (maximumAttempts < 1)
+            throw new ArgumentOutOfRangeException(nameof(maximumAttempts));
+
+        var attempts = 0;
+        do
+        {
+            cleanupAttempt();
+            attempts++;
+        } while (attempts < maximumAttempts && cleanupPending());
+        return attempts;
+    }
+
     public void Dispose()
     {
         if (Interlocked.Exchange(ref disposeState, 1) != 0)
@@ -655,14 +710,22 @@ internal sealed partial class CratePicker
         {
             if (!IsGameProcessUnavailable())
             {
+                Cleanup(EnsureProcessResumed);
                 Cleanup(DisableGamePause);
-                Cleanup(DisableCrateActionLines);
+                Cleanup(DisableCratePickerForShutdown);
                 Cleanup(DisableRevealMapBestEffort);
                 Cleanup(DisableInfiniteMoney);
                 Cleanup(DisableOneHitKill);
                 Cleanup(DisableHighDefense);
                 Cleanup(DisableEliteUnits);
-                Cleanup(DisableInfiniteRangeMode);
+                _ = RunCleanupWithRetry(
+                    () => infiniteRangePatchInstalled,
+                    () => Cleanup(() =>
+                    {
+                        EnsureProcessResumed();
+                        DisableInfiniteRangeMode();
+                    }),
+                    InfiniteRangeCleanupAttempts);
                 Cleanup(DisableInfiniteSpeedMode);
                 Cleanup(ReleaseInfiniteRangePatch);
                 Cleanup(DisableSpinningMcvMode);
@@ -675,6 +738,13 @@ internal sealed partial class CratePicker
                 Cleanup(DisableBuildAnywhere);
                 Cleanup(DisableDisabledGapGenerators);
                 Cleanup(DisableInvadeMode);
+                Cleanup(DisablePlayerEnhancements);
+                Cleanup(DisableUnitEnhancements);
+                Cleanup(RestoreMiscOverrides);
+                Cleanup(DisableEnemyAndFunFeatures);
+                Cleanup(RestoreRulesOverrides);
+                Cleanup(RestorePendingLogicUpdatePatch);
+                Cleanup(EnsureProcessResumed);
             }
             autoBuildState = null;
             formationModeEnabled = false;

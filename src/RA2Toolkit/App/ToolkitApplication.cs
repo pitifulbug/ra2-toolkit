@@ -5,8 +5,11 @@ internal sealed class ToolkitApplication : System.Windows.Application
 {
     private GameSessionHost? gameHost;
     private GlobalHotkeyService? hotkeys;
-    private MainWindow? window;
+    private FloatingOverlayWindow? overlayWindow;
+    private GameWindowTracker? gameWindowTracker;
     private MainWindowViewModel? viewModel;
+    private System.Windows.Forms.NotifyIcon? trayIcon;
+    private System.Drawing.Icon? trayImage;
     private bool shuttingDown;
 
     protected override void OnStartup(StartupEventArgs eventArgs)
@@ -19,13 +22,26 @@ internal sealed class ToolkitApplication : System.Windows.Application
         {
             gameHost = new GameSessionHost();
             viewModel = new MainWindowViewModel(gameHost.Dispatch);
-            window = new MainWindow(viewModel);
-            MainWindow = window;
+            gameWindowTracker = new GameWindowTracker();
+            overlayWindow = new FloatingOverlayWindow(viewModel, gameWindowTracker);
+            MainWindow = overlayWindow;
 
             gameHost.StateChanged += HandleStateChanged;
             gameHost.StatusChanged += HandleStatusChanged;
             gameHost.Completed += HandleHostCompleted;
-            window.Show();
+            gameWindowTracker.Start();
+
+            var trayMenu = new System.Windows.Forms.ContextMenuStrip();
+            _ = trayMenu.Items.Add("退出 RA2 Toolkit", null,
+                (_, _) => viewModel.ExitCommand.Execute(null));
+            trayImage = System.Drawing.Icon.ExtractAssociatedIcon(Environment.ProcessPath!);
+            trayIcon = new System.Windows.Forms.NotifyIcon
+            {
+                ContextMenuStrip = trayMenu,
+                Icon = trayImage ?? System.Drawing.SystemIcons.Application,
+                Text = "RA2 Toolkit",
+                Visible = true
+            };
 
             try
             {
@@ -37,6 +53,7 @@ internal sealed class ToolkitApplication : System.Windows.Application
                 viewModel.ShowStatus($"全局快捷键不可用：{error.Message}", true);
             }
 
+            viewModel.CheckUpdatesNow();
             gameHost.Start();
         }
         catch (Exception error)
@@ -59,11 +76,18 @@ internal sealed class ToolkitApplication : System.Windows.Application
     private void HandleGlobalHotkey(HotkeyGesture gesture)
     {
         var target = viewModel;
-        // The hook fires before WPF handles the same key. Drop it before queuing,
-        // otherwise completing capture can make the newly assigned shortcut run.
-        if (target is null || target.IsCapturingHotkey)
+        if (target is null)
             return;
-        DispatchToUi(() => target.HandleGlobalHotkey(gesture));
+        // Snapshot capture state before queuing so a newly assigned shortcut is not
+        // executed when the same key later reaches the UI thread.
+        var isCapturing = target.IsCapturingHotkey;
+        DispatchToUi(() =>
+        {
+            if (isCapturing)
+                target.HandleCapturedHotkey(gesture);
+            else
+                target.HandleGlobalHotkey(gesture);
+        });
     }
 
     private void HandleHostCompleted()
@@ -73,7 +97,7 @@ internal sealed class ToolkitApplication : System.Windows.Application
             if (shuttingDown)
                 return;
             shuttingDown = true;
-            window?.RequestClose();
+            overlayWindow?.RequestClose();
             Shutdown();
         });
     }
@@ -96,6 +120,22 @@ internal sealed class ToolkitApplication : System.Windows.Application
     {
         shuttingDown = true;
         DispatcherUnhandledException -= HandleDispatcherException;
+        if (trayIcon is not null)
+        {
+            trayIcon.Visible = false;
+            trayIcon.ContextMenuStrip?.Dispose();
+            trayIcon.Dispose();
+            trayIcon = null;
+        }
+        trayImage?.Dispose();
+        trayImage = null;
+        if (overlayWindow is not null)
+        {
+            overlayWindow.RequestClose();
+            overlayWindow = null;
+        }
+        gameWindowTracker?.Dispose();
+        gameWindowTracker = null;
         if (hotkeys is not null)
         {
             hotkeys.Pressed -= HandleGlobalHotkey;
@@ -110,6 +150,8 @@ internal sealed class ToolkitApplication : System.Windows.Application
             gameHost.Dispose();
             gameHost = null;
         }
+        viewModel?.Dispose();
+        viewModel = null;
         base.OnExit(eventArgs);
     }
 }

@@ -38,8 +38,12 @@ internal sealed class GameSessionHost : IDisposable
         }
     }
 
-    internal void Dispatch(OverlayCommand command)
+    internal void Dispatch(OverlayCommand command) =>
+        Dispatch(OverlayCommandRequest.For(command));
+
+    internal void Dispatch(OverlayCommandRequest request)
     {
+        var command = request.Command;
         IGameSession? session;
         lock (gate)
         {
@@ -54,7 +58,7 @@ internal sealed class GameSessionHost : IDisposable
         {
             try
             {
-                session.EnqueueCommand(command);
+                session.EnqueueCommand(request);
             }
             catch (ObjectDisposedException)
             {
@@ -89,7 +93,7 @@ internal sealed class GameSessionHost : IDisposable
                     {
                         activeSession = session;
                         if (stopRequested)
-                            session.EnqueueCommand(OverlayCommand.ExitProgram);
+                            session.EnqueueCommand(OverlayCommandRequest.For(OverlayCommand.ExitProgram));
                     }
 
                     lastConnectionError = null;
@@ -128,6 +132,7 @@ internal sealed class GameSessionHost : IDisposable
                             if (ReferenceEquals(activeSession, session))
                                 activeSession = null;
                         }
+                        ForwardState(OverlayState.Empty);
                         try
                         {
                             session.Dispose();
@@ -137,7 +142,8 @@ internal sealed class GameSessionHost : IDisposable
                             // Session cleanup is already best-effort; the host must remain reusable.
                         }
                     }
-                    ForwardState(OverlayState.Empty);
+                    else
+                        ForwardState(OverlayState.Empty);
                 }
 
                 if (IsStopRequested() || cancellation.Token.WaitHandle.WaitOne(
@@ -208,7 +214,7 @@ internal sealed class GameSessionHost : IDisposable
 
         try
         {
-            session.EnqueueCommand(OverlayCommand.ExitProgram);
+            session.EnqueueCommand(OverlayCommandRequest.For(OverlayCommand.ExitProgram));
         }
         catch (ObjectDisposedException)
         {

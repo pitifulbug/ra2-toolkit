@@ -10,7 +10,7 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
     private static readonly Uri NewIssueUri = new(
         "https://github.com/pitifulbug/ra2-toolkit/issues/new");
 
-    private readonly Action<OverlayCommand> dispatch;
+    private readonly Action<OverlayCommandRequest> dispatch;
     private readonly HotkeyStore hotkeyStore;
     private readonly IUpdateService updateService;
     private readonly bool ownsUpdateService;
@@ -20,10 +20,11 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
     private string statusText = "等待启动游戏";
     private string updateText = string.Empty;
     private bool isUpdateChecking;
+    private bool isConnected;
     private Uri? availableReleaseUri;
 
     internal MainWindowViewModel(
-        Action<OverlayCommand> dispatch,
+        Action<OverlayCommandRequest> dispatch,
         HotkeyStore? hotkeyStore = null,
         IUpdateService? updateService = null)
     {
@@ -35,15 +36,20 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
         var items = FeatureCatalog.All.Select(definition =>
             new FeatureItemViewModel(definition, dispatch, BeginHotkeyCapture,
                 this.hotkeyStore)).ToArray();
+        Features = items.ToDictionary(
+            item => item.Definition.PrimaryCommand.ToString(),
+            StringComparer.Ordinal);
         FeatureGroups = Enum.GetValues<FeatureCategory>()
             .Select(category => new FeatureGroupViewModel(
                 category,
                 FeatureCatalog.GetCategoryTitle(category),
                 items.Where(item => item.Definition.Category == category).ToArray()))
             .ToArray();
+        ApplyState(OverlayState.Empty);
 
         this.hotkeyStore.Changed += RefreshHotkeys;
-        ExitCommand = new RelayCommand(() => dispatch(OverlayCommand.ExitProgram));
+        ExitCommand = new RelayCommand(() =>
+            dispatch(new OverlayCommandRequest(OverlayCommand.ExitProgram)));
         OpenFeedbackCommand = new RelayCommand(OpenFeedback);
         OpenReleaseCommand = new RelayCommand(OpenRelease, () => availableReleaseUri is not null);
         checkUpdatesCommand = new AsyncRelayCommand(CheckUpdatesAsync);
@@ -56,6 +62,7 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
 
     internal event Action? CaptureStateChanged;
 
+    public IReadOnlyDictionary<string, FeatureItemViewModel> Features { get; }
     public IReadOnlyList<FeatureGroupViewModel> FeatureGroups { get; }
     public Version CurrentVersion { get; }
     public string VersionText { get; }
@@ -82,6 +89,7 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
     }
 
     public bool HasUpdateText => !string.IsNullOrWhiteSpace(UpdateText);
+    public bool HasAvailableRelease => availableReleaseUri is not null;
 
     public bool IsUpdateChecking
     {
@@ -91,13 +99,20 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
 
     public bool IsCapturingHotkey => capturingFeature is not null;
 
+    public bool IsConnected
+    {
+        get => isConnected;
+        private set => SetProperty(ref isConnected, value);
+    }
+
     public string CapturePrompt => capturingFeature is null
         ? string.Empty
         : $"正在设置“{capturingFeature.Title}”：请按组合键；Esc 取消，Delete 清除。";
 
     internal void ApplyState(OverlayState state)
     {
-        foreach (var feature in FeatureGroups.SelectMany(group => group.Features))
+        IsConnected = state.Connected;
+        foreach (var feature in Features.Values)
             feature.ApplyState(state);
     }
 
@@ -112,7 +127,12 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
         var feature = capturingFeature;
         if (feature is null)
             return false;
-        var command = feature.Definition.HotkeyBindingCommand;
+        if (feature.Definition.HotkeyBindingCommand is not { } command)
+        {
+            error = "此功能不支持快捷键。";
+            FinishHotkeyCapture();
+            return false;
+        }
         if (hotkeyStore.FindConflict(command, gesture) is { } conflict)
         {
             error = $"{gesture.DisplayText} 已由“{FeatureCatalog.GetCommandTitle(conflict)}”占用。";
@@ -130,12 +150,32 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
         var feature = capturingFeature;
         if (feature is null)
             return;
-        _ = hotkeyStore.Remove(feature.Definition.HotkeyBindingCommand);
+        if (feature.Definition.HotkeyBindingCommand is { } command)
+            _ = hotkeyStore.Remove(command);
         FinishHotkeyCapture();
         ShowStatus($"已清除“{feature.Title}”的快捷键");
     }
 
     internal void CancelHotkeyCapture() => FinishHotkeyCapture();
+
+    internal void HandleCapturedHotkey(HotkeyGesture gesture)
+    {
+        if (capturingFeature is null)
+            return;
+        if (gesture.Key == 0x1B)
+        {
+            CancelHotkeyCapture();
+            ShowStatus("已取消快捷键设置");
+            return;
+        }
+        if (gesture.Key is 0x08 or 0x2E)
+        {
+            ClearCapturedHotkey();
+            return;
+        }
+        if (!TryCaptureHotkey(gesture, out var error) && error is not null)
+            ShowStatus(error, true);
+    }
 
     internal void HandleGlobalHotkey(HotkeyGesture gesture)
     {
@@ -155,16 +195,16 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
             if (now - lastCrateHotkeyAt <= TimeSpan.FromMilliseconds(GetDoubleClickTime()))
             {
                 lastCrateHotkeyAt = DateTime.MinValue;
-                dispatch(doublePressCommand);
+                dispatch(new OverlayCommandRequest(doublePressCommand));
                 return;
             }
             lastCrateHotkeyAt = now;
         }
-        dispatch(feature.HotkeyPressCommand);
+        if (feature.HotkeyPressCommand is { } pressCommand)
+            dispatch(new OverlayCommandRequest(pressCommand));
     }
 
-    internal async Task CheckUpdatesNowAsync() =>
-        await CheckUpdatesAsync(CancellationToken.None);
+    internal void CheckUpdatesNow() => CheckUpdatesCommand.Execute(null);
 
     private void BeginHotkeyCapture(FeatureItemViewModel feature)
     {
@@ -190,13 +230,16 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
 
     private void RefreshHotkeys()
     {
-        foreach (var feature in FeatureGroups.SelectMany(group => group.Features))
+        foreach (var feature in Features.Values)
             feature.RefreshHotkey();
     }
 
     private async Task CheckUpdatesAsync(CancellationToken cancellationToken)
     {
         IsUpdateChecking = true;
+        availableReleaseUri = null;
+        ((RelayCommand)OpenReleaseCommand).NotifyCanExecuteChanged();
+        OnPropertyChanged(nameof(HasAvailableRelease));
         UpdateText = "正在检查更新…";
         try
         {
@@ -204,13 +247,17 @@ internal sealed class MainWindowViewModel : ObservableObject, IDisposable
             availableReleaseUri = result.UpdateAvailable ? result.ReleaseUri : null;
             UpdateText = result.UpdateAvailable
                 ? $"发现新版本 {result.LatestVersion.ToString(3)}，点击查看"
-                : string.Empty;
+                : "已是最新版本";
             ((RelayCommand)OpenReleaseCommand).NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(HasAvailableRelease));
         }
         catch (Exception error) when (error is HttpRequestException or TaskCanceledException or
                                       JsonException or InvalidDataException)
         {
-            UpdateText = "更新检查失败，点击版本号重试";
+            availableReleaseUri = null;
+            UpdateText = $"更新检查失败：{error.Message}";
+            ((RelayCommand)OpenReleaseCommand).NotifyCanExecuteChanged();
+            OnPropertyChanged(nameof(HasAvailableRelease));
         }
         finally
         {

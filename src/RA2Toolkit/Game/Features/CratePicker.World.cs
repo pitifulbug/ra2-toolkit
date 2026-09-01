@@ -8,6 +8,8 @@ using Microsoft.Win32.SafeHandles;
 
 internal sealed partial class CratePicker
 {
+    private PendingLogicUpdatePatch? pendingLogicUpdatePatch;
+
     private void ToggleRevealMap()
     {
         if (revealMapEnabled)
@@ -38,6 +40,7 @@ internal sealed partial class CratePicker
 
     private void InvokeRevealMapLikeCrate(uint house)
     {
+        RestorePendingLogicUpdatePatch();
         if (ReadUInt32(CurrentPlayer) != house)
             throw new InvalidOperationException("当前玩家阵营已经变化，已停止揭开地图。");
         if (!ReadBytes(RevealMapLikeCrate, RevealMapLikeCrateFingerprint.Length)
@@ -126,12 +129,16 @@ internal sealed partial class CratePicker
         {
             if (mayBePublished && installedJump is not null)
             {
-                try { RestoreOwnedCodePatch(LogicUpdate, LogicUpdateOriginalBytes, installedJump); }
+                var restored = false;
+                try { restored = RestoreOwnedCodePatch(LogicUpdate, LogicUpdateOriginalBytes, installedJump); }
                 catch (Exception error) when (error is Win32Exception or InvalidOperationException or
-                                              GameProcessExitedException)
+                                               GameProcessExitedException)
                 {
                 }
-                RetireCodeCave(codeCave);
+                if (restored)
+                    RetireCodeCave(codeCave);
+                else
+                    pendingLogicUpdatePatch = new PendingLogicUpdatePatch(codeCave, installedJump);
             }
             else
                 FreeUnpublishedCodeCaveBestEffort(codeCave);
@@ -140,6 +147,7 @@ internal sealed partial class CratePicker
 
     private void InvokeHouseReshroudMap(uint house)
     {
+        RestorePendingLogicUpdatePatch();
         if (ReadUInt32(CurrentPlayer) != house)
             throw new InvalidOperationException("当前玩家阵营已经变化，已停止恢复地图迷雾。");
         if (!ReadBytes(LogicUpdate, LogicUpdateOriginalBytes.Length)
@@ -223,17 +231,36 @@ internal sealed partial class CratePicker
         {
             if (mayBePublished && installedJump is not null)
             {
-                try { RestoreOwnedCodePatch(LogicUpdate, LogicUpdateOriginalBytes, installedJump); }
+                var restored = false;
+                try { restored = RestoreOwnedCodePatch(LogicUpdate, LogicUpdateOriginalBytes, installedJump); }
                 catch (Exception error) when (error is Win32Exception or InvalidOperationException or
-                                              GameProcessExitedException)
+                                               GameProcessExitedException)
                 {
                 }
-                RetireCodeCave(codeCave);
+                if (restored)
+                    RetireCodeCave(codeCave);
+                else
+                    pendingLogicUpdatePatch = new PendingLogicUpdatePatch(codeCave, installedJump);
             }
             else
                 FreeUnpublishedCodeCaveBestEffort(codeCave);
         }
     }
+
+    private void RestorePendingLogicUpdatePatch()
+    {
+        if (pendingLogicUpdatePatch is not { } pending)
+            return;
+        if (!RestoreOwnedCodePatch(LogicUpdate, LogicUpdateOriginalBytes, pending.InstalledBytes))
+        {
+            throw new InvalidOperationException(
+                "游戏主循环临时补丁仍未恢复；为避免覆盖外部修改，已停止后续原生调用。");
+        }
+        RetireCodeCave(pending.CodeCave);
+        pendingLogicUpdatePatch = null;
+    }
+
+    private sealed record PendingLogicUpdatePatch(nint CodeCave, byte[] InstalledBytes);
 
     private void DisableRevealMap()
     {
@@ -318,7 +345,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             if (ReadUInt32(CurrentPlayer) != house)
                 throw new InvalidOperationException("当前玩家阵营已经变化，已停止写入资金。");
@@ -328,7 +355,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 
@@ -484,7 +511,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             if (ReadUInt32(CurrentPlayer) != house)
                 throw new InvalidOperationException("当前玩家阵营已经变化，已停止写入单位攻防倍率。");
@@ -532,7 +559,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 
@@ -541,7 +568,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
             var items = ReadUInt32(TechnoArray + 4);
             var count = ReadInt32(TechnoArray + 16);
@@ -569,7 +596,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 

@@ -1,9 +1,9 @@
 internal sealed class OverlayCommandDispatcher
 {
-    private readonly IReadOnlyDictionary<OverlayCommand, Func<int?>> handlers;
+    private readonly IReadOnlyDictionary<OverlayCommand, Func<OverlayCommandRequest, int?>> handlers;
 
     internal OverlayCommandDispatcher(
-        IReadOnlyDictionary<OverlayCommand, Func<int?>> handlers)
+        IReadOnlyDictionary<OverlayCommand, Func<OverlayCommandRequest, int?>> handlers)
     {
         var missing = Enum.GetValues<OverlayCommand>()
             .Where(command => !handlers.ContainsKey(command))
@@ -15,6 +15,6 @@ internal sealed class OverlayCommandDispatcher
         this.handlers = handlers;
     }
 
-    internal int? Execute(OverlayCommand command) =>
-        handlers.TryGetValue(command, out var handler) ? handler() : null;
+    internal int? Execute(OverlayCommandRequest request) =>
+        handlers.TryGetValue(request.Command, out var handler) ? handler(request) : null;
 }

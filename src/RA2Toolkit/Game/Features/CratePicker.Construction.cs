@@ -322,21 +322,21 @@ internal sealed partial class CratePicker
         for (var radius = 0; radius <= radiusLimit; radius++)
         {
             for (var deltaY = -radius; deltaY <= radius; deltaY++)
-            for (var deltaX = -radius; deltaX <= radius; deltaX++)
-            {
-                if (Math.Max(Math.Abs(deltaX), Math.Abs(deltaY)) != radius)
-                    continue;
+                for (var deltaX = -radius; deltaX <= radius; deltaX++)
+                {
+                    if (Math.Max(Math.Abs(deltaX), Math.Abs(deltaY)) != radius)
+                        continue;
 
-                var x = (long)center.X + deltaX;
-                var y = (long)center.Y + deltaY;
-                if (x <= 0 || y <= 0 ||
-                    x < bounds.Left || x > bounds.Right ||
-                    y < bounds.Top || y > bounds.Bottom ||
-                    x is < short.MinValue or > short.MaxValue ||
-                    y is < short.MinValue or > short.MaxValue)
-                    continue;
-                candidates.Add((checked((short)x), checked((short)y)));
-            }
+                    var x = (long)center.X + deltaX;
+                    var y = (long)center.Y + deltaY;
+                    if (x <= 0 || y <= 0 ||
+                        x < bounds.Left || x > bounds.Right ||
+                        y < bounds.Top || y > bounds.Bottom ||
+                        x is < short.MinValue or > short.MaxValue ||
+                        y is < short.MinValue or > short.MaxValue)
+                        continue;
+                    candidates.Add((checked((short)x), checked((short)y)));
+                }
         }
         return candidates;
     }

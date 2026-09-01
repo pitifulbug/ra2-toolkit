@@ -212,8 +212,11 @@ internal sealed partial class CratePicker
             var restored = false;
             if (mayBePublished && installedPatch is not null)
             {
-                try { restored = RestoreOwnedCodePatch(ActionLineSelectionCheck,
-                    ActionLineSelectionOriginalBytes, installedPatch); }
+                try
+                {
+                    restored = RestoreOwnedCodePatch(ActionLineSelectionCheck,
+                    ActionLineSelectionOriginalBytes, installedPatch);
+                }
                 catch (Exception cleanupError) when (cleanupError is Win32Exception or
                                                      InvalidOperationException or
                                                      GameProcessExitedException)

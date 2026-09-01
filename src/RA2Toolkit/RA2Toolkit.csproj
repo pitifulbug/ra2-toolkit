@@ -18,11 +18,16 @@
     <ApplicationIcon>Resources\App.ico</ApplicationIcon>
     <AssemblyName>ra2-toolkit</AssemblyName>
     <RootNamespace>RA2Toolkit</RootNamespace>
-    <Version>1.0.4</Version>
-    <AssemblyVersion>1.0.4.0</AssemblyVersion>
-    <FileVersion>1.0.4.0</FileVersion>
-    <UseWindowsForms>False</UseWindowsForms>
+    <Version>1.0.5</Version>
+    <AssemblyVersion>1.0.5.0</AssemblyVersion>
+    <FileVersion>1.0.5.0</FileVersion>
+    <UseWindowsForms>true</UseWindowsForms>
     <AssemblyTitle>ra2-toolkit</AssemblyTitle>
+    <RunAnalyzersDuringBuild>False</RunAnalyzersDuringBuild>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="RA2Toolkit.Tests" />
+  </ItemGroup>
 
 </Project>

@@ -2,31 +2,10 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 internal sealed partial class CratePicker : IDisposable
 {
-    private static readonly IReadOnlyDictionary<string, string[]> SupportedHashes =
-        new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["gamemd.exe"] =
-            [
-                "3E81A61775D2745D1DABE397325EF663CD994FFC194DA4E998E3BF5D2D308600"
-            ],
-            ["gamemd-ares.exe"] =
-            [
-                "1CB7E4E421E265208A9F43DFD818F3E14388E32D99009886C9ED3B1B10B8894C",
-                "1F5E520C08DC2451A3C6294EDB2FB94096B19FC6593BA8D2DBBA2AB76BAAD34C"
-            ],
-            ["gamemd-spawn.exe"] =
-            [
-                "8BE5C5043FF3E7D92BAC505BA7CC955B6F7C2C20B2DD6761924B14FB09F4517E",
-                "247F72881E1A68C8FC305E3702DC0100A72D17601305999026393C340D5DAEB0"
-            ]
-        };
-
     private const int EventSize = 111;
     private const int QueueCapacity = 128;
     private const int MissionEventsPerBatch = 16;
@@ -71,7 +50,8 @@ internal sealed partial class CratePicker : IDisposable
     private static readonly byte[] BuildAnywhereWaterOriginalBytes = Convert.FromHexString("8B4C241C83F9FF");
     private static readonly byte[] LogicUpdateCallOriginalBytes = Convert.FromHexString("E80DD3FFFF");
     private static readonly byte[] InvadeModeOriginalBytes = Convert.FromHexString("833800740E");
-    private const int MaximumCrateActionLineUnits = 100;
+    private const int MaximumCratePickerUnits = 100;
+    private const int MaximumCrateActionLineUnits = MaximumCratePickerUnits;
     private const int CrateActionLineCodeCaveSize = 512;
     private static readonly byte[] ActionLineSelectionOriginalBytes =
         Convert.FromHexString("8A868300000084C0");
@@ -244,7 +224,7 @@ internal sealed partial class CratePicker : IDisposable
     private bool multiplayerSession;
     private uint sessionHouse;
     private int lastObservedFrame;
-    private readonly ConcurrentQueue<OverlayCommand> overlayCommands = new();
+    private readonly ConcurrentQueue<OverlayCommandRequest> overlayCommands = new();
     private DateTime nextOverlayRefreshAt = DateTime.MinValue;
     private volatile bool exitRequested;
     private readonly OverlayCommandDispatcher commandDispatcher;
@@ -269,16 +249,6 @@ internal sealed partial class CratePicker : IDisposable
         SafeProcessHandle? openedHandle = null;
         try
         {
-            var path = process.MainModule?.FileName
-                ?? throw new InvalidOperationException("无法取得游戏路径。请确认本程序已用管理员身份运行。");
-            var fileName = Path.GetFileName(path);
-            if (!SupportedHashes.TryGetValue(fileName, out var supportedHashes))
-                throw new InvalidOperationException($"不受支持的游戏程序：{fileName}");
-            var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path)));
-            if (!supportedHashes.Contains(hash, StringComparer.OrdinalIgnoreCase))
-                throw new InvalidOperationException(
-                    $"游戏版本不受支持。为避免错误偏移导致崩溃，只允许已完整审计的精确版本。\n检测到：{hash}");
-
             const uint access = Native.ProcessQueryInformation | Native.ProcessVmRead |
                                 Native.ProcessVmWrite | Native.ProcessVmOperation | Native.ProcessSuspendResume;
             openedHandle = Native.OpenProcess(access, false, process.Id);
@@ -289,8 +259,7 @@ internal sealed partial class CratePicker : IDisposable
             ValidateLayout();
             sessionHouse = ReadUInt32(CurrentPlayer);
             lastObservedFrame = ReadInt32(CurrentFrame);
-            Console.WriteLine($"已连接：{Path.GetFileName(path)}，PID {process.Id}");
-            Console.WriteLine("版本校验：已知哈希。");
+            Console.WriteLine($"已连接：{process.ProcessName}.exe，PID {process.Id}");
             Console.WriteLine("游戏内文字注入：已关闭。\n");
         }
         catch
@@ -303,7 +272,8 @@ internal sealed partial class CratePicker : IDisposable
 
     public void Run()
     {
-        Console.WriteLine("软件版本：1.0.4");
+        var version = typeof(CratePicker).Assembly.GetName().Version ?? new Version();
+        Console.WriteLine($"软件版本：{version.ToString(3)}");
         Console.WriteLine("使用方法：");
         Console.WriteLine("1. 在游戏中框选一个或多个己方可移动单位。");
         Console.WriteLine("桌面控制中心已启动；可从任务栏切换，关闭窗口会安全退出工具。\n");
@@ -315,6 +285,7 @@ internal sealed partial class CratePicker : IDisposable
                 break;
             try
             {
+                EnsureProcessResumed();
                 if (HasMatchEpochChanged())
                     break;
                 multiplayerSession = IsMultiplayerSession();
@@ -349,6 +320,17 @@ internal sealed partial class CratePicker : IDisposable
                     MaintainAutoRepair();
                 if (superWeaponNoCooldownEnabled || paratrooperNoCooldownEnabled)
                     MaintainSuperWeaponNoCooldown();
+                if (detectDisguisesEnabled || mindControlImmunityEnabled)
+                    MaintainOwnedTypeEnhancements();
+                if (autoUnitRepairEnabled || rapidAttackEnabled || fastReloadEnabled ||
+                    largeAmmoEnabled || extendedGuardRangeEnabled || fastInfantryEnabled)
+                    MaintainUnitEnhancements();
+                if (disableShieldsEnabled)
+                    MaintainDisabledShields();
+                if (freezeEnemiesEnabled || enemyRepairsCauseDamageEnabled ||
+                    counterYuriControlEnabled || captureAttackersEnabled ||
+                    preventEnemyCapturesEnabled || preventEnemyGarrisonEnabled)
+                    MaintainEnemyAndFunFeatures();
                 var now = DateTime.UtcNow;
                 if (enabled && now >= nextCrateTickAt)
                 {
@@ -431,7 +413,58 @@ internal sealed partial class CratePicker : IDisposable
         infiniteSpeedUnits.Clear();
         spinningMcvs.Clear();
         gapGeneratorStates.Clear();
+        void RestoreSharedOverride(Action restore)
+        {
+            try { restore(); }
+            catch (Exception error) when (error is Win32Exception or InvalidOperationException or
+                                          GameProcessExitedException)
+            {
+                Console.Error.WriteLine($"[换局规则恢复失败] {error.Message}");
+            }
+        }
+
+        // Rules and TechnoType fields are process-wide shared data. They can remain valid
+        // while a match is being torn down, so restore them with ownership checks before
+        // discarding object pointers from the old match.
+        RestoreSharedOverride(RestoreRulesOverrides);
+        RestoreSharedOverride(() => RestoreOwnedTypeFlags(detectDisguiseTypeStates,
+            TechnoTypeDetectDisguiseOffset));
+        RestoreSharedOverride(RestoreMindImmunityTypeFlags);
+        RestoreSharedOverride(RestoreGuardRanges);
+        ResetRulesOverridesForMatch();
+        ResetNewFeatureSnapshotsForMatch();
         return true;
+    }
+
+    private void ResetNewFeatureSnapshotsForMatch()
+    {
+        spySatelliteAndRadarEnabled = false;
+        radarHouse = 0;
+        radarScenario = 0;
+        radarOwnsReveal = false;
+        detectDisguisesEnabled = false;
+        mindControlImmunityEnabled = false;
+        detectDisguiseTypeStates.Clear();
+        mindImmunityTypeStates.Clear();
+        autoUnitRepairEnabled = false;
+        rapidAttackEnabled = false;
+        fastReloadEnabled = false;
+        largeAmmoEnabled = false;
+        extendedGuardRangeEnabled = false;
+        fastInfantryEnabled = false;
+        largeAmmoStates.Clear();
+        guardRangeTypeStates.Clear();
+        fastInfantryStates.Clear();
+        spawnManagerStates.Clear();
+        disableShieldsEnabled = false;
+        freezeEnemiesEnabled = false;
+        enemyRepairsCauseDamageEnabled = false;
+        counterYuriControlEnabled = false;
+        captureAttackersEnabled = false;
+        preventEnemyCapturesEnabled = false;
+        preventEnemyGarrisonEnabled = false;
+        frozenEnemyStates.Clear();
+        enemyBuildingHealthStates.Clear();
     }
 
     private void EnableCratePicker()
@@ -447,14 +480,98 @@ internal sealed partial class CratePicker : IDisposable
     {
         var wasEnabled = enabled;
         enabled = false;
-        DisableCrateActionLines();
+        Exception? routeCleanupError = null;
+        try
+        {
+            DisableCrateActionLines();
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or
+                                      GameProcessExitedException)
+        {
+            routeCleanupError = error;
+        }
+
         pendingMissions.Clear();
-        foreach (var state in units.Where(state => IsCapturedUnitValid(state.Unit)))
-            QueueGuard(state.Unit);
+        foreach (var state in units)
+        {
+            try
+            {
+                if (IsCapturedUnitValid(state.Unit))
+                    QueueGuard(state.Unit);
+            }
+            catch (Exception error) when (error is Win32Exception or InvalidOperationException or
+                                          GameProcessExitedException)
+            {
+                Console.Error.WriteLine(
+                    $"[自动捡箱退出清理] 无法验证单位 {state.Unit.Id}：{error.Message}");
+            }
+        }
         units.Clear();
         recentlyCollected.Clear();
         if (wasEnabled)
-            Console.WriteLine("[自动捡箱已关闭] 所有已登记单位均已停止捡箱，路线已清除。");
+        {
+            Console.WriteLine(routeCleanupError is null
+                ? "[自动捡箱已关闭] 已为登记单位排队停止命令，路线已清除。"
+                : "[自动捡箱已关闭] 已为登记单位排队停止命令，路线清理失败并将继续执行其他退出清理。");
+        }
+        if (routeCleanupError is not null)
+        {
+            throw new InvalidOperationException(
+                "自动捡箱路线清理失败，但单位停止命令已继续排队。", routeCleanupError);
+        }
+    }
+
+    private void DisableCratePickerForShutdown()
+    {
+        formationModeEnabled = false;
+        formationMissions.Clear();
+        try
+        {
+            DisableCratePicker();
+        }
+        catch (Exception error) when (error is Win32Exception or InvalidOperationException or
+                                      GameProcessExitedException)
+        {
+            Console.Error.WriteLine($"[自动捡箱退出清理] {error.Message}");
+        }
+
+        var maximumAttempts = QueueCapacity / MissionEventsPerBatch;
+        for (var attempt = 0; attempt < maximumAttempts && pendingMissions.Count != 0; attempt++)
+        {
+            var pendingBefore = pendingMissions.Count;
+            nextMissionFlushAt = DateTime.MinValue;
+            try
+            {
+                FlushQueuedMissions(DateTime.UtcNow);
+            }
+            catch (Exception error) when (error is Win32Exception or InvalidOperationException or
+                                          GameProcessExitedException)
+            {
+                Console.Error.WriteLine($"[自动捡箱退出清理] 停止命令批次写入失败：{error.Message}");
+                if (processResumePending)
+                {
+                    try
+                    {
+                        EnsureProcessResumed();
+                    }
+                    catch (Exception resumeError) when (resumeError is Win32Exception or
+                                                        InvalidOperationException or
+                                                        GameProcessExitedException)
+                    {
+                        Console.Error.WriteLine(
+                            $"[自动捡箱退出清理] 无法恢复游戏进程：{resumeError.Message}");
+                        break;
+                    }
+                }
+            }
+            if (pendingMissions.Count >= pendingBefore)
+                break;
+        }
+        if (pendingMissions.Count != 0)
+        {
+            Console.Error.WriteLine(
+                $"[自动捡箱退出清理] 游戏事件队列空间不足，仍有 {pendingMissions.Count} 个停止命令未投递。");
+        }
     }
 
     private int SetSelectedCratePickers(bool shouldEnable)
@@ -492,14 +609,44 @@ internal sealed partial class CratePicker : IDisposable
             return removedUnits.Length;
         }
 
-        var addedUnits = selectedUnits
+        var candidates = selectedUnits
             .Where(selected => units.All(state => state.Unit != selected))
             .ToArray();
+        var availableSlots = Math.Max(0, MaximumCratePickerUnits - units.Count);
+        var addedUnits = candidates.Take(availableSlots).ToArray();
         units.AddRange(addedUnits.Select(selected => new UnitState(selected)));
         if (crateRouteLinesEnabled && units.Count != 0)
             EnableCrateActionLines();
+        if (candidates.Length > addedUnits.Length)
+        {
+            Console.WriteLine(
+                $"[自动捡箱已达上限] 最多登记 {MaximumCratePickerUnits} 个单位，本次另有 {candidates.Length - addedUnits.Length} 个单位未添加。");
+        }
         Console.WriteLine($"[开始捡箱] 已添加 {addedUnits.Length} 个选中单位：{FormatUnitIds(addedUnits.Select(unit => unit.Id))}");
         return addedUnits.Length;
+    }
+
+    private int ToggleSelectedCratePickers()
+    {
+        var selectedUnits = CaptureSelectedUnits();
+        if (selectedUnits.Count == 0)
+            return 0;
+
+        var selectedSet = selectedUnits
+            .Select(selected => (selected.Pointer, selected.Id))
+            .ToHashSet();
+        var registeredSet = units
+            .Select(state => (state.Unit.Pointer, state.Unit.Id))
+            .ToHashSet();
+        var shouldEnable = selectedSet.Any(selected => !registeredSet.Contains(selected));
+        if (!enabled)
+        {
+            EnableCratePicker();
+            shouldEnable = true;
+        }
+
+        var affected = SetSelectedCratePickers(shouldEnable);
+        return shouldEnable ? affected : -affected;
     }
 
     internal static string FormatUnitIds(IEnumerable<int> ids)

@@ -4,7 +4,7 @@ internal interface IGameSession : IDisposable
     event Action<string, bool>? OperationStatusChanged;
 
     bool ExitRequested { get; }
-    void EnqueueCommand(OverlayCommand command);
+    void EnqueueCommand(OverlayCommandRequest request);
     void Run();
 }
 
@@ -24,5 +24,5 @@ internal sealed partial class CratePicker : IGameSession
 
     bool IGameSession.ExitRequested => ExitRequested;
 
-    void IGameSession.EnqueueCommand(OverlayCommand command) => EnqueueCommand(command);
+    void IGameSession.EnqueueCommand(OverlayCommandRequest request) => EnqueueCommand(request);
 }

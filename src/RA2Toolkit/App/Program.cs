@@ -5,6 +5,8 @@ internal static class Program
     [STAThread]
     private static int Main()
     {
+        System.Windows.Forms.Application.SetHighDpiMode(System.Windows.Forms.HighDpiMode.PerMonitorV2);
+
         using var singleInstanceMutex = new Mutex(
             true, @"Local\PitifulBug.RA2Toolkit.SingleInstance", out var isFirstInstance);
         if (!isFirstInstance)

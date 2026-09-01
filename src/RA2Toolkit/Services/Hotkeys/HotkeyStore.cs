@@ -70,6 +70,7 @@ internal sealed class HotkeyStore
                 {
                     "ToggleCombatBoost" => nameof(OverlayCommand.ToggleOneHitKill),
                     "PromoteSelectedUnits" => nameof(OverlayCommand.ToggleEliteUnits),
+                    "ToggleCratePicker" => nameof(OverlayCommand.ToggleSelectedCratePickers),
                     _ => entry.Key
                 };
                 if (!Enum.TryParse<OverlayCommand>(migratedName, out var command) ||

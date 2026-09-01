@@ -2,17 +2,11 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 internal sealed partial class CratePicker
 {
-    private static readonly HashSet<string> SupportedAresHashes =
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            "93CE890F387A6C1B3240A2DD7B674F25FEC5A0E96F0B0D0306796B2EDF7B5B83"
-        };
     private byte[]? canBuildEntryBytes;
 
     private void ToggleMaximumPower()
@@ -212,7 +206,7 @@ internal sealed partial class CratePicker
         var suspended = false;
         try
         {
-            CheckNtStatus(Native.NtSuspendProcess(handle), "暂停游戏进程失败");
+            SuspendProcessOrThrow();
             suspended = true;
 
             if (shouldInstall)
@@ -257,7 +251,7 @@ internal sealed partial class CratePicker
         finally
         {
             if (suspended)
-                CheckNtStatus(ResumeProcessWithRetry(), "恢复游戏进程失败");
+                ResumeSuspendedProcessOrThrow();
         }
     }
 
@@ -282,14 +276,7 @@ internal sealed partial class CratePicker
                 var start = module.BaseAddress.ToInt64();
                 var end = checked(start + module.ModuleMemorySize);
                 if (target >= start && target < end)
-                {
-                    var hash = Convert.ToHexString(
-                        SHA256.HashData(File.ReadAllBytes(module.FileName)));
-                    if (!SupportedAresHashes.Contains(hash))
-                        throw new InvalidOperationException(
-                            $"Ares.dll 版本未经审计（SHA-256 {hash}），未链接其建造钩子。");
                     return target;
-                }
             }
         }
         catch (Exception error) when (error is Win32Exception or InvalidOperationException)

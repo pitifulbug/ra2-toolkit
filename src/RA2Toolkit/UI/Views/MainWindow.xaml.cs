@@ -6,6 +6,7 @@ public partial class MainWindow : Window
 {
     private readonly MainWindowViewModel viewModel;
     private bool allowClose;
+    private bool isClosed;
 
     internal MainWindow(MainWindowViewModel viewModel)
     {
@@ -21,12 +22,15 @@ public partial class MainWindow : Window
 
     internal void RequestClose()
     {
-        allowClose = true;
-        Close();
+        if (!isClosed)
+        {
+            allowClose = true;
+            Close();
+        }
     }
 
     private void HandleLoaded(object sender, RoutedEventArgs eventArgs) =>
-        _ = viewModel.CheckUpdatesNowAsync();
+        viewModel.CheckUpdatesNow();
 
     private void HandleCaptureStateChanged()
     {
@@ -89,11 +93,11 @@ public partial class MainWindow : Window
 
     private void HandleClosed(object? sender, EventArgs eventArgs)
     {
+        isClosed = true;
         viewModel.CaptureStateChanged -= HandleCaptureStateChanged;
         PreviewKeyDown -= HandlePreviewKeyDown;
         Loaded -= HandleLoaded;
         Closing -= HandleClosing;
         Closed -= HandleClosed;
-        viewModel.Dispose();
     }
 }
